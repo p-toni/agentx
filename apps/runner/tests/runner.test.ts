@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -24,7 +24,9 @@ describe('agent-run CLI', () => {
 
   beforeAll(async () => {
     cliPath = path.resolve(__dirname, '../dist/agent-run.js');
-    await exec('pnpm', ['--filter', '@deterministic-agent-lab/runner', 'build']);
+    if (!(await fileExists(cliPath))) {
+      await exec('pnpm', ['--filter', '@deterministic-agent-lab/runner', 'build'], path.resolve(__dirname, '..'));
+    }
     dockerAvailable = await hasDocker();
   });
 
@@ -113,4 +115,13 @@ async function openBundleFromTar(bundlePath: string): Promise<TraceBundle> {
     });
   });
   return openBundle(extractDir);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
