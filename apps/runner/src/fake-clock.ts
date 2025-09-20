@@ -19,12 +19,14 @@ export function installFakeClock(): void {
   };
 
   const OriginalDate = Date;
+  type DateCtorArg = ConstructorParameters<typeof Date>[number];
+
   class FakeDate extends OriginalDate {
-    constructor(...args: ConstructorParameters<typeof Date>) {
+    constructor(...args: DateCtorArg[]) {
       if (args.length === 0) {
         super(Date.now());
       } else {
-        super(...args);
+        super(...(args as ConstructorParameters<typeof Date>));
       }
     }
     static now() {
