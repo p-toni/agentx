@@ -97,7 +97,11 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/journal
 
-  packages/journal: {}
+  packages/journal:
+    dependencies:
+      '@deterministic-agent-lab/trace':
+        specifier: workspace:*
+        version: link:../trace
 
   packages/proxy:
     dependencies:

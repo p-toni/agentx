@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import Ajv, { type ErrorObject } from 'ajv';
@@ -40,6 +41,158 @@ export interface IntentRecord {
   intent: string;
   payload?: unknown;
   [key: string]: unknown;
+}
+
+export interface PromptMessage {
+  role: string;
+  content: string;
+}
+
+export interface PromptParams {
+  temperature?: number;
+  top_p?: number;
+  [key: string]: unknown;
+}
+
+export interface PromptTokenEvent {
+  index: number;
+  token: string;
+  timestamp: string;
+  logprob?: number;
+}
+
+export interface PromptRecording {
+  type: 'llm.call';
+  provider: string;
+  model: string;
+  params: PromptParams;
+  prompt: {
+    type: 'chat';
+    messages: PromptMessage[];
+  };
+  response: {
+    completion: string;
+    finishReason?: string;
+    tokens: PromptTokenEvent[];
+  };
+  timings: {
+    startedAt: string;
+    completedAt: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export function serialisePromptRecording(recording: PromptRecording): string {
+  return JSON.stringify(recording, null, 2);
+}
+
+export function parsePromptRecording(payload: string): PromptRecording {
+  return JSON.parse(payload) as PromptRecording;
+}
+
+export type PromptStoreMode = 'record' | 'replay';
+
+export interface PromptStoreOptions {
+  directory?: string;
+  mode?: PromptStoreMode;
+  clock?: () => Date;
+}
+
+export class PromptTraceStore {
+  private readonly directory: string;
+  private readonly mode: PromptStoreMode;
+  private readonly clock: () => Date;
+  private replayQueue: string[] | null = null;
+  private replayIndex = 0;
+
+  constructor(options: PromptStoreOptions = {}) {
+    const baseDirectory = options.directory ?? process.env.AGENT_PROMPTS_DIR ?? join(process.cwd(), 'prompts');
+    this.directory = resolve(baseDirectory);
+    this.mode = options.mode ?? (process.env.AGENT_PROMPTS_MODE === 'replay' ? 'replay' : 'record');
+    this.clock = options.clock ?? (() => new Date());
+  }
+
+  static fromEnv(options: PromptStoreOptions = {}): PromptTraceStore {
+    return new PromptTraceStore(options);
+  }
+
+  getMode(): PromptStoreMode {
+    return this.mode;
+  }
+
+  getDirectory(): string {
+    return this.directory;
+  }
+
+  async recordPrompt(recording: PromptRecording): Promise<string> {
+    if (this.mode !== 'record') {
+      throw new Error('PromptTraceStore is not in record mode');
+    }
+
+    await fs.mkdir(this.directory, { recursive: true });
+    const fileName = await this.nextFileName();
+    const filePath = join(this.directory, fileName);
+    const payload = JSON.stringify(recording, null, 2);
+    await fs.writeFile(filePath, `${payload}\n`, 'utf8');
+    return filePath;
+  }
+
+  async consumePrompt(): Promise<PromptRecording> {
+    if (this.mode !== 'replay') {
+      throw new Error('PromptTraceStore is not in replay mode');
+    }
+
+    const fileName = await this.nextReplayFile();
+    if (!fileName) {
+      throw new Error('No recorded prompts available for replay');
+    }
+
+    const filePath = join(this.directory, fileName);
+    const raw = await fs.readFile(filePath, 'utf8');
+    try {
+      return parsePromptRecording(raw);
+    } catch (error) {
+      throw new TraceBundleValidationError(`Failed to parse prompt recording ${fileName}: ${(error as Error).message}`);
+    }
+  }
+
+  private async nextReplayFile(): Promise<string | undefined> {
+    if (this.replayQueue === null) {
+      await this.initialiseReplayQueue();
+    }
+
+    if (!this.replayQueue) {
+      return undefined;
+    }
+
+    const file = this.replayQueue[this.replayIndex];
+    this.replayIndex += 1;
+    return file;
+  }
+
+  private async initialiseReplayQueue(): Promise<void> {
+    if (!existsSync(this.directory)) {
+      this.replayQueue = [];
+      return;
+    }
+
+    const files = await fs.readdir(this.directory);
+    this.replayQueue = files
+      .filter((file) => /^\d{4}\.json$/i.test(file))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  private async nextFileName(): Promise<string> {
+    const files = existsSync(this.directory) ? await fs.readdir(this.directory) : [];
+    const numbers = files
+      .map((file) => file.match(/^(\d+)\.json$/)?.[1])
+      .filter((value): value is string => Boolean(value))
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isFinite(value));
+
+    const nextIndex = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
+    return `${String(nextIndex).padStart(4, '0')}.json`;
+  }
 }
 
 export interface CreateBundleInput {

@@ -3,6 +3,13 @@ import { promises as fs } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { TextEncoder } from 'node:util';
+import {
+  PromptMessage,
+  PromptParams,
+  PromptRecording,
+  PromptTokenEvent,
+  PromptTraceStore
+} from '@deterministic-agent-lab/trace';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export interface Intent<TPayload, TReceipt> {
@@ -357,5 +364,302 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
 
   async rollback(): Promise<void> {
     // Intentionally a no-op. Future implementations may enqueue compensating actions.
+  }
+}
+
+export interface LlmCallPayload {
+  readonly provider: string;
+  readonly model: string;
+  readonly prompt: {
+    readonly type?: 'chat';
+    readonly messages: PromptMessage[];
+  };
+  readonly params?: PromptParams;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface LlmCallReceipt {
+  readonly provider: string;
+  readonly model: string;
+  readonly completion: string;
+  readonly tokens: PromptTokenEvent[];
+  readonly recordedAt: string;
+  readonly source: 'record' | 'replay';
+  readonly recordingPath?: string;
+}
+
+interface LlmCallPrepared {
+  readonly preview: string;
+}
+
+export interface LlmProviderRequest {
+  readonly model: string;
+  readonly messages: PromptMessage[];
+  readonly params: PromptParams;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface LlmProviderResult {
+  readonly id?: string;
+  readonly model: string;
+  readonly completion: string;
+  readonly finishReason?: string;
+  readonly raw?: unknown;
+}
+
+export interface LlmProvider {
+  call(request: LlmProviderRequest): Promise<LlmProviderResult>;
+}
+
+export interface LlmCallDriverOptions {
+  readonly provider?: LlmProvider;
+  readonly recorder?: PromptTraceStore;
+  readonly clock?: () => Date;
+  readonly simulate?: (payload: LlmCallPayload) => string;
+}
+
+const DEFAULT_SIMULATION_PREFIX = '[simulated]';
+
+export class LlmCallDriver implements Driver<LlmCallPayload, LlmCallReceipt, LlmCallPrepared> {
+  private readonly provider: LlmProvider;
+  private readonly recorder: PromptTraceStore;
+  private readonly clock: () => Date;
+  private readonly simulate: (payload: LlmCallPayload) => string;
+
+  constructor(options: LlmCallDriverOptions = {}) {
+    this.provider = options.provider ?? new OpenAICompatibleProvider();
+    this.recorder = options.recorder ?? PromptTraceStore.fromEnv();
+    this.clock = options.clock ?? (() => new Date());
+    this.simulate = options.simulate ?? defaultSimulation;
+  }
+
+  async prepare(intent: Intent<LlmCallPayload, LlmCallReceipt>, _context: DriverContext): Promise<LlmCallPrepared> {
+    const preview = this.simulate(intent.payload);
+    return { preview };
+  }
+
+  async commit(
+    intent: Intent<LlmCallPayload, LlmCallReceipt>,
+    _prepared: LlmCallPrepared,
+    _context: DriverContext
+  ): Promise<LlmCallReceipt> {
+    const params = normaliseParams(intent.payload.params);
+    const mode = this.recorder.getMode();
+
+    if (mode === 'replay') {
+      const recording = await this.recorder.consumePrompt();
+      return {
+        provider: recording.provider,
+        model: recording.model,
+        completion: recording.response.completion,
+        tokens: cloneTokens(recording.response.tokens),
+        recordedAt: recording.timings.completedAt,
+        source: 'replay'
+      };
+    }
+
+    const startedAt = this.clock().toISOString();
+    const prompt = {
+      type: intent.payload.prompt.type ?? 'chat',
+      messages: intent.payload.prompt.messages
+    } as const;
+    const result = await this.provider.call({
+      model: intent.payload.model,
+      messages: prompt.messages,
+      params,
+      metadata: intent.payload.metadata
+    });
+
+    const completion = result.completion;
+    const tokens = createTokenEvents(completion, this.clock);
+    const recording: PromptRecording = {
+      type: 'llm.call',
+      provider: intent.payload.provider,
+      model: result.model,
+      params,
+      prompt,
+      response: {
+        completion,
+        finishReason: result.finishReason,
+        tokens
+      },
+      timings: {
+        startedAt,
+        completedAt: this.clock().toISOString()
+      },
+      metadata: createRecordingMetadata(intent, result)
+    };
+
+    const recordingPath = await this.recorder.recordPrompt(recording);
+
+    return {
+      provider: recording.provider,
+      model: recording.model,
+      completion: recording.response.completion,
+      tokens: cloneTokens(recording.response.tokens),
+      recordedAt: recording.timings.completedAt,
+      recordingPath,
+      source: 'record'
+    };
+  }
+
+  async rollback(
+    _intent: Intent<LlmCallPayload, LlmCallReceipt>,
+    _prepared: LlmCallPrepared,
+    _context: DriverContext
+  ): Promise<void> {
+    // LLM calls are not rolled back; deterministic replay handles compensation.
+  }
+}
+
+export interface OpenAICompatibleProviderOptions {
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+  readonly organization?: string;
+  readonly fetchImpl?: typeof fetch;
+}
+
+interface OpenAIChatCompletionResponseChoice {
+  index: number;
+  finish_reason?: string;
+  message?: {
+    role?: string;
+    content?: string;
+  };
+}
+
+interface OpenAIChatCompletionResponse {
+  id?: string;
+  model?: string;
+  choices?: OpenAIChatCompletionResponseChoice[];
+  [key: string]: unknown;
+}
+
+export class OpenAICompatibleProvider implements LlmProvider {
+  private readonly apiKey?: string;
+  private readonly baseUrl: string;
+  private readonly organization?: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: OpenAICompatibleProviderOptions = {}) {
+    this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
+    this.baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com').replace(/\/$/, '');
+    this.organization = options.organization ?? process.env.OPENAI_ORGANIZATION;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    if (typeof this.fetchImpl !== 'function') {
+      throw new Error('Global fetch implementation is required for OpenAICompatibleProvider');
+    }
+  }
+
+  async call(request: LlmProviderRequest): Promise<LlmProviderResult> {
+    const url = `${this.baseUrl}/v1/chat/completions`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+    if (this.organization) {
+      headers['OpenAI-Organization'] = this.organization;
+    }
+
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: request.model,
+        messages: request.messages,
+        temperature: request.params.temperature,
+        top_p: request.params.top_p,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const body = await safeReadText(response);
+      throw new Error(`OpenAI request failed with status ${response.status}: ${body}`);
+    }
+
+    const payload = (await response.json()) as OpenAIChatCompletionResponse;
+    const firstChoice = payload.choices?.[0];
+    const completion = firstChoice?.message?.content ?? '';
+
+    return {
+      id: payload.id,
+      model: payload.model ?? request.model,
+      completion,
+      finishReason: firstChoice?.finish_reason,
+      raw: payload
+    };
+  }
+}
+
+function defaultSimulation(payload: LlmCallPayload): string {
+  const lastMessage = payload.prompt.messages.at(-1);
+  const suffix = lastMessage ? ` ${lastMessage.content}` : '';
+  return `${DEFAULT_SIMULATION_PREFIX}${suffix}`.trim();
+}
+
+function normaliseParams(params?: PromptParams): PromptParams {
+  if (!params) {
+    return {};
+  }
+
+  const safeParams: PromptParams = {};
+  if (typeof params.temperature === 'number') {
+    safeParams.temperature = params.temperature;
+  }
+  if (typeof params.top_p === 'number') {
+    safeParams.top_p = params.top_p;
+  }
+
+  for (const [key, value] of Object.entries(params)) {
+    if (key === 'temperature' || key === 'top_p') {
+      continue;
+    }
+    safeParams[key] = value;
+  }
+
+  return safeParams;
+}
+
+function createTokenEvents(content: string, clock: () => Date): PromptTokenEvent[] {
+  const glyphs = Array.from(content);
+  return glyphs.map((token, index) => ({
+    index,
+    token,
+    timestamp: clock().toISOString()
+  }));
+}
+
+function cloneTokens(tokens: PromptTokenEvent[]): PromptTokenEvent[] {
+  return tokens.map((token) => ({ ...token }));
+}
+
+function createRecordingMetadata(
+  intent: Intent<LlmCallPayload, LlmCallReceipt>,
+  result: LlmProviderResult
+): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {
+    intentIdempotencyKey: intent.idempotencyKey,
+    ...(intent.metadata ?? {})
+  };
+
+  if (result.id) {
+    metadata.providerResponseId = result.id;
+  }
+
+  if (Object.keys(metadata).length === 0) {
+    return undefined;
+  }
+
+  return metadata;
+}
+
+async function safeReadText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return '<unavailable>';
   }
 }
