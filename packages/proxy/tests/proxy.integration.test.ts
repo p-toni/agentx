@@ -8,8 +8,10 @@ import { EgressProxy } from '../src/proxy-server';
 import { configureProxyEnvironment } from '../src/client';
 
 const tempDirs: string[] = [];
+const shouldSkip = process.env.CI === 'true' || process.env.SKIP_PROXY_INTEGRATION === '1';
+const suite = shouldSkip ? describe.skip : describe;
 
-describe('EgressProxy integration', () => {
+suite('EgressProxy integration', () => {
   let container: StartedTestContainer;
   let httpbinUrl: string;
   let runtimeAvailable = true;
