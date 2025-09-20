@@ -433,16 +433,19 @@ export class LlmCallDriver implements Driver<LlmCallPayload, LlmCallReceipt, Llm
     this.simulate = options.simulate ?? defaultSimulation;
   }
 
-  async prepare(intent: Intent<LlmCallPayload, LlmCallReceipt>, _context: DriverContext): Promise<LlmCallPrepared> {
+  async prepare(intent: Intent<LlmCallPayload, LlmCallReceipt>, context: DriverContext): Promise<LlmCallPrepared> {
+    void context;
     const preview = this.simulate(intent.payload);
     return { preview };
   }
 
   async commit(
     intent: Intent<LlmCallPayload, LlmCallReceipt>,
-    _prepared: LlmCallPrepared,
-    _context: DriverContext
+    prepared: LlmCallPrepared,
+    context: DriverContext
   ): Promise<LlmCallReceipt> {
+    void prepared;
+    void context;
     const params = normaliseParams(intent.payload.params);
     const mode = this.recorder.getMode();
 
@@ -504,10 +507,13 @@ export class LlmCallDriver implements Driver<LlmCallPayload, LlmCallReceipt, Llm
   }
 
   async rollback(
-    _intent: Intent<LlmCallPayload, LlmCallReceipt>,
-    _prepared: LlmCallPrepared,
-    _context: DriverContext
+    intent: Intent<LlmCallPayload, LlmCallReceipt>,
+    prepared: LlmCallPrepared,
+    context: DriverContext
   ): Promise<void> {
+    void intent;
+    void prepared;
+    void context;
     // LLM calls are not rolled back; deterministic replay handles compensation.
   }
 }
