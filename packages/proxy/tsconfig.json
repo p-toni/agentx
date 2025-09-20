@@ -4,8 +4,14 @@
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
-    "declarationMap": true
+    "declarationMap": true,
+    "typeRoots": ["./types", "../../node_modules/@types"],
+    "baseUrl": ".",
+    "paths": {
+      "http-mitm-proxy": ["./types/http-mitm-proxy/index"],
+      "http-mitm-proxy/*": ["./types/http-mitm-proxy/index"]
+    }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "types/**/*.d.ts"],
   "exclude": ["dist", "tests"]
 }

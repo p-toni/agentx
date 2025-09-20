@@ -91,6 +91,13 @@ export class HarRecorder {
     const responseHeaders = toHeaderArray(input.responseHeaders);
     const requestBodyText = bufferToText(input.requestBody);
     const responseBodyText = bufferToText(input.responseBody);
+    const responseMimeType = detectMimeType(responseHeaders) ?? 'application/octet-stream';
+    const responseContent = {
+      size: input.responseBody.length,
+      mimeType: responseMimeType,
+      text: responseBodyText?.text ?? '',
+      ...(responseBodyText?.encoding ? { encoding: responseBodyText.encoding } : {})
+    };
     const key = buildEntryKey(input.method, input.url, input.requestBody);
 
     this.entries.push({
@@ -121,12 +128,7 @@ export class HarRecorder {
         headersSize: -1,
         bodySize: input.responseBody.length,
         cookies: [],
-        content: {
-          size: input.responseBody.length,
-          mimeType: detectMimeType(responseHeaders) ?? 'application/octet-stream',
-          text: responseBodyText.text,
-          encoding: responseBodyText.encoding
-        }
+        content: responseContent
       },
       cache: {},
       timings: {
@@ -183,7 +185,7 @@ export class HarReplay {
       return undefined;
     }
 
-  const headers = Object.fromEntries(entry.response.headers.map((header) => [header.name, header.value]));
+    const headers = Object.fromEntries(entry.response.headers.map((header) => [header.name, header.value]));
     const content = entry.response.content;
     const bodyBuffer = content?.encoding === 'base64' && content?.text
       ? Buffer.from(content.text, 'base64')
@@ -221,7 +223,12 @@ function bufferToText(buffer: Buffer): { text: string; encoding?: 'base64' } | u
   }
 
   const utf8Text = buffer.toString('utf8');
-  if (Buffer.from(utf8Text, 'utf8').equals(buffer)) {
+  const utf8Buffer = Buffer.from(utf8Text, 'utf8');
+  const sameContent =
+    utf8Buffer.byteLength === buffer.byteLength &&
+    utf8Buffer.every((value, index) => value === buffer[index]);
+
+  if (sameContent) {
     return { text: utf8Text };
   }
 
@@ -234,7 +241,7 @@ function detectMimeType(headers: HarHeader[]): string | undefined {
 }
 
 function buildEntryKey(method: string, url: string, body: Buffer): string {
-  const hash = createHash('sha256').update(body).digest('hex');
+  const hash = createHash('sha256').update(Uint8Array.from(body)).digest('hex');
   return `${method.toUpperCase()} ${url} ${hash}`;
 }
 

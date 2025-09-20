@@ -1,13 +1,16 @@
 import { promises as fs } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import ProxyFactory from 'http-mitm-proxy';
-import type HttpMitmProxy from 'http-mitm-proxy';
+import ProxyFactory, {
+  type IContext,
+  type IProxy,
+  type ErrorCallback,
+  type DataCallback
+} from 'http-mitm-proxy';
 import { AllowPolicy } from './policy';
 import { HarRecorder, HarReplay, HarReplayMatch, harCreatorMeta, HarRecordInput } from './har';
 
-type MitmContext = HttpMitmProxy.IContext;
-type ErrorCallback = (error?: Error | null, data?: unknown) => void;
-type DataCallback = (error?: Error | null, chunk?: Buffer) => void;
+type MitmContext = IContext;
+type MitmProxy = IProxy;
 
 export type ProxyMode = 'record' | 'replay' | 'passthrough';
 
@@ -44,7 +47,7 @@ export class EgressProxy {
   private readonly sslCacheDir: string;
   private readonly logger: (message: string) => void;
 
-  private readonly proxy: HttpMitmProxy.IProxy;
+  private readonly proxy: MitmProxy;
   private harRecorder?: HarRecorder;
   private harReplay?: HarReplay;
   private blocked: BlockedRequest[] = [];
@@ -140,14 +143,14 @@ export class EgressProxy {
       const requestChunks: Buffer[] = [];
 
       ctx.onRequestData((_: MitmContext, chunk: Buffer, done: DataCallback) => {
-        requestChunks.push(Buffer.from(chunk));
+        requestChunks.push(chunk);
         done();
       });
 
       ctx.onRequestEnd(async (_ctx: MitmContext, done: ErrorCallback) => {
         try {
           const info = extractRequestInfo(ctx);
-          const requestBody = Buffer.concat(requestChunks);
+          const requestBody = Buffer.concat(requestChunks as readonly Uint8Array[]);
           const policyAllowed = this.policy.isAllowed({
             host: info.hostname,
             port: info.port,
@@ -179,13 +182,19 @@ export class EgressProxy {
           if (this.mode === 'record' && this.harRecorder) {
             const responseChunks: Buffer[] = [];
             ctx.onResponseData((_: MitmContext, chunk: Buffer, doneResponse: DataCallback) => {
-              responseChunks.push(Buffer.from(chunk));
+              responseChunks.push(chunk);
               doneResponse(null, chunk);
             });
 
             ctx.onResponseEnd((context: MitmContext, endDone: ErrorCallback) => {
               try {
-                const responseBody = Buffer.concat(responseChunks);
+                const serverResponse = context.serverToProxyResponse;
+                if (!serverResponse) {
+                  endDone();
+                  return;
+                }
+
+                const responseBody = Buffer.concat(responseChunks as readonly Uint8Array[]);
                 const input: HarRecordInput = {
                   startedDateTime: new Date(startTime).toISOString(),
                   time: Date.now() - startTime,
@@ -194,9 +203,9 @@ export class EgressProxy {
                   httpVersion: info.httpVersion,
                   requestHeaders: context.clientToProxyRequest.headers,
                   requestBody,
-                  responseStatus: context.serverToProxyResponse.statusCode ?? 0,
-                  responseStatusText: context.serverToProxyResponse.statusMessage ?? '',
-                  responseHeaders: context.serverToProxyResponse.headers,
+                  responseStatus: serverResponse.statusCode ?? 0,
+                  responseStatusText: serverResponse.statusMessage ?? '',
+                  responseHeaders: serverResponse.headers,
                   responseBody
                 };
                 this.harRecorder?.record(input);
@@ -229,7 +238,7 @@ type RequestInfo = {
 function extractRequestInfo(ctx: MitmContext): RequestInfo {
   const method = (ctx.clientToProxyRequest.method ?? 'GET').toUpperCase();
   const path = ctx.clientToProxyRequest.url ?? '/';
-  const hostHeader = ctx.clientToProxyRequest.headers.host ?? ctx.proxyToServerRequestOptions.host ?? '';
+  const hostHeader = ctx.clientToProxyRequest.headers.host ?? ctx.proxyToServerRequestOptions?.host ?? '';
   const { hostname, port } = splitHost(hostHeader, ctx);
   const scheme = ctx.isSSL ? 'https' : 'http';
   const url = `${scheme}://${hostHeader}${path.startsWith('/') ? path : `/${path}`}`;
@@ -252,7 +261,9 @@ function splitHost(hostHeader: string, ctx: MitmContext): { hostname: string; po
     const port = Number(portStr) || defaultPort;
     return { hostname: hostname.toLowerCase(), port };
   }
-  return { hostname: hostHeader.toLowerCase(), port: ctx.proxyToServerRequestOptions.port ?? defaultPort };
+  const dynamicPort = ctx.proxyToServerRequestOptions?.port;
+  const port = typeof dynamicPort === 'number' ? dynamicPort : defaultPort;
+  return { hostname: hostHeader.toLowerCase(), port };
 }
 
 function respondWith(ctx: MitmContext, status: number, headers: Record<string, string>, body: string): void {
