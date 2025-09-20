@@ -1,19 +1,46 @@
-import type { TraceBundle, TraceEvent } from '@deterministic-agent-lab/trace';
+import type { IntentRecord, TraceBundle } from '@deterministic-agent-lab/trace';
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
 
-export type ReplayHandler = (event: TraceEvent) => void;
+export type ReplayHandler = (intent: IntentRecord) => void;
 
 export class DeterministicReplay {
-  constructor(private readonly bundle: TraceBundle) {}
+  constructor(private readonly intents: readonly IntentRecord[]) {}
+
+  static async fromBundle(bundle: TraceBundle): Promise<DeterministicReplay> {
+    const intents = await loadIntents(bundle);
+    return new DeterministicReplay(intents);
+  }
 
   play(handler: ReplayHandler): void {
-    const ordered = [...this.bundle.events].sort(
-      (left, right) => left.timestamp - right.timestamp
+    const ordered = [...this.intents].sort((left, right) =>
+      compareTimestamp(left.timestamp, right.timestamp)
     );
 
-    for (const event of ordered) {
-      handler(event);
+    for (const intent of ordered) {
+      handler(intent);
     }
   }
+}
+
+export async function loadIntents(bundle: TraceBundle): Promise<IntentRecord[]> {
+  const intentsPath = join(bundle.root, bundle.manifest.files.intents);
+  const raw = await fs.readFile(intentsPath, 'utf8');
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as IntentRecord);
+}
+
+function compareTimestamp(left: string, right: string): number {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime)) {
+    return leftTime - rightTime;
+  }
+
+  return left.localeCompare(right);
 }
 
 export function createSeededRng(seed: number): () => number {

@@ -10,25 +10,32 @@ export function runAgent(seed: number): RunnerResult {
   const journal = new Journal();
   const rng = createSeededRng(seed);
 
-  const bundle = {
-    id: `seed-${seed}`,
-    events: Array.from({ length: 3 }, (_, index) => ({
-      timestamp: index,
-      channel: 'rng',
-      data: rng().toFixed(5)
-    }))
-  };
+  const bundleId = `seed-${seed}`;
+  const intents = Array.from({ length: 3 }, (_, index) => ({
+    timestamp: new Date(index * 1000).toISOString(),
+    intent: 'rng.sample',
+    payload: {
+      value: rng().toFixed(5),
+      sequence: index
+    }
+  }));
 
-  const replay = new DeterministicReplay(bundle);
+  const replay = new DeterministicReplay(intents);
   const outputs: string[] = [];
-  replay.play((event) => {
-    const message = `${event.channel}:${event.data}`;
+  replay.play((intent) => {
+    const payload = (intent.payload && typeof intent.payload === 'object'
+      ? intent.payload
+      : {}) as Record<string, unknown>;
+    const value = typeof payload.value === 'string' ? payload.value : String(payload.value ?? '');
+    const sequence = typeof payload.sequence === 'number' ? payload.sequence : outputs.length;
+
+    const message = `rng:${value}`;
     outputs.push(message);
     journal.add({
-      id: `${bundle.id}-${event.timestamp}`,
-      timestamp: event.timestamp,
+      id: `${bundleId}-${intent.timestamp}`,
+      timestamp: sequence,
       type: 'rng-sample',
-      payload: { value: event.data }
+      payload: { value }
     });
   });
 

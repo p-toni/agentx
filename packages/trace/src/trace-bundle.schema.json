@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://deterministic-agent-lab.dev/schemas/trace-bundle/1",
+  "title": "Trace Bundle Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "createdAt", "files"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "deterministic-agent-lab/trace-bundle@1"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "description": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "env",
+        "clock",
+        "network",
+        "fsDiff",
+        "logs",
+        "prompts",
+        "intents"
+      ],
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^.+"
+        },
+        "clock": {
+          "type": "string",
+          "pattern": "^.+"
+        },
+        "network": {
+          "type": "string",
+          "pattern": "^.+"
+        },
+        "fsDiff": {
+          "type": "string",
+          "pattern": "/$|^.+"
+        },
+        "logs": {
+          "type": "string",
+          "pattern": "/$|^.+"
+        },
+        "prompts": {
+          "type": "string",
+          "pattern": "/$|^.+"
+        },
+        "intents": {
+          "type": "string",
+          "pattern": "^.+"
+        }
+      }
+    },
+    "hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^(env|clock|network|fsDiff|logs|prompts|intents)$": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}
