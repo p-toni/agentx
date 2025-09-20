@@ -3,10 +3,26 @@
   "version": "0.1.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "egress-proxy": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "http-mitm-proxy": "^0.10.2",
+    "node-forge": "^1.3.1",
+    "undici": "^6.19.8",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "testcontainers": "^10.9.0"
   }
 }

@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { AllowlistProxy } from '../src/index';
+import { AllowPolicy } from '../src/policy';
 
-describe('AllowlistProxy', () => {
-  it('allows only configured methods for a host', () => {
-    const proxy = new AllowlistProxy([
-      { host: 'api.example.com', methods: ['GET', 'POST'] }
+describe('AllowPolicy', () => {
+  it('permits configured methods and path prefixes', () => {
+    const policy = new AllowPolicy([
+      {
+        host: 'api.example.com',
+        methods: ['GET', 'POST'],
+        pathPrefixes: ['/v1']
+      }
     ]);
 
-    expect(proxy.isAllowed(new URL('https://api.example.com/v1'), 'GET')).toBe(true);
-    expect(proxy.isAllowed(new URL('https://api.example.com/v1'), 'DELETE')).toBe(false);
-    expect(proxy.isAllowed(new URL('https://other.example.com/v1'), 'GET')).toBe(false);
+    expect(policy.isAllowed({ host: 'api.example.com', port: 443, method: 'GET', path: '/v1/users' })).toBe(true);
+    expect(policy.isAllowed({ host: 'api.example.com', port: 443, method: 'DELETE', path: '/v1/users' })).toBe(false);
+    expect(policy.isAllowed({ host: 'api.example.com', port: 443, method: 'GET', path: '/v2' })).toBe(false);
+    expect(policy.isAllowed({ host: 'other.example.com', port: 443, method: 'GET', path: '/v1/users' })).toBe(false);
   });
 });
