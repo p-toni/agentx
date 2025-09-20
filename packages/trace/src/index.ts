@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import Ajv, { type ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import traceBundleSchema from './trace-bundle.schema.json';
