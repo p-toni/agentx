@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { Driver, Intent } from '@deterministic-agent-lab/journal';
 import { Journal } from '@deterministic-agent-lab/journal';
 
 export interface GateApiOptions {
@@ -8,6 +9,7 @@ export interface GateApiOptions {
 export function buildServer(options: GateApiOptions = {}): FastifyInstance {
   const fastify = Fastify();
   const journal = options.journal ?? new Journal();
+  const planDriver = new PlanIntentDriver();
 
   fastify.post('/plan', async (request, reply) => {
     const body = (request.body as { id: string; payload: unknown }) ?? {};
@@ -16,12 +18,17 @@ export function buildServer(options: GateApiOptions = {}): FastifyInstance {
       return { error: 'id is required' };
     }
 
-    journal.add({
-      id: body.id,
-      timestamp: Date.now(),
-      type: 'plan',
-      payload: body.payload as Record<string, unknown>
-    });
+    await journal.append(
+      {
+        type: 'plan',
+        idempotencyKey: body.id,
+        payload: {
+          id: body.id,
+          data: body.payload
+        }
+      },
+      planDriver
+    );
 
     return { status: 'accepted' };
   });
@@ -35,4 +42,33 @@ if (require.main === module) {
     server.log.error(error);
     process.exit(1);
   });
+}
+
+interface PlanPayload {
+  readonly id: string;
+  readonly data: unknown;
+}
+
+interface PlanReceipt {
+  readonly acknowledged: true;
+}
+
+class PlanIntentDriver implements Driver<PlanPayload, PlanReceipt, void> {
+  async plan(intent: Intent<PlanPayload, PlanReceipt>): Promise<void> {
+    if (!intent.payload.id) {
+      throw new Error('plan intent requires an id');
+    }
+  }
+
+  async prepare(): Promise<void> {
+    return undefined;
+  }
+
+  async commit(): Promise<PlanReceipt> {
+    return { acknowledged: true } as const;
+  }
+
+  async rollback(): Promise<void> {
+    // Nothing to rollback; persistence is handled by the journal entry itself.
+  }
 }

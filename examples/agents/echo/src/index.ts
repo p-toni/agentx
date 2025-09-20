@@ -1,3 +1,4 @@
+import type { Driver } from '@deterministic-agent-lab/journal';
 import { Journal } from '@deterministic-agent-lab/journal';
 
 export interface EchoInput {
@@ -9,16 +10,45 @@ export interface EchoResult {
   readonly journalSize: number;
 }
 
-export function runEchoAgent(input: EchoInput): EchoResult {
-  const journal = new Journal();
+export interface EchoAgentOptions {
+  readonly journal?: Journal;
+}
+
+interface EchoPayload {
+  readonly normalized: string;
+}
+
+interface EchoReceipt {
+  readonly recorded: true;
+}
+
+const echoDriver: Driver<EchoPayload, EchoReceipt, void> = {
+  async prepare() {
+    return undefined;
+  },
+  async commit() {
+    return { recorded: true } as const;
+  },
+  async rollback() {
+    // nothing to roll back for in-memory bookkeeping
+  }
+};
+
+export async function runEchoAgent(
+  input: EchoInput,
+  options: EchoAgentOptions = {}
+): Promise<EchoResult> {
+  const journal = options.journal ?? new Journal();
   const normalized = input.message.trim();
 
-  journal.add({
-    id: 'echo-1',
-    timestamp: Date.now(),
-    type: 'echo',
-    payload: { normalized }
-  });
+  await journal.append(
+    {
+      type: 'echo.record',
+      idempotencyKey: `echo-${normalized}`,
+      payload: { normalized }
+    },
+    echoDriver
+  );
 
   return {
     echoed: normalized,

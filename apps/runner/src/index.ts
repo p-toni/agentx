@@ -1,4 +1,3 @@
-import { Journal } from '@deterministic-agent-lab/journal';
 import { DeterministicReplay, createSeededRng } from '@deterministic-agent-lab/replay';
 
 export interface RunnerResult {
@@ -7,10 +6,8 @@ export interface RunnerResult {
 }
 
 export function runAgent(seed: number): RunnerResult {
-  const journal = new Journal();
   const rng = createSeededRng(seed);
 
-  const bundleId = `seed-${seed}`;
   const intents = Array.from({ length: 3 }, (_, index) => ({
     timestamp: new Date(index * 1000).toISOString(),
     intent: 'rng.sample',
@@ -27,16 +24,9 @@ export function runAgent(seed: number): RunnerResult {
       ? intent.payload
       : {}) as Record<string, unknown>;
     const value = typeof payload.value === 'string' ? payload.value : String(payload.value ?? '');
-    const sequence = typeof payload.sequence === 'number' ? payload.sequence : outputs.length;
 
     const message = `rng:${value}`;
     outputs.push(message);
-    journal.add({
-      id: `${bundleId}-${intent.timestamp}`,
-      timestamp: sequence,
-      type: 'rng-sample',
-      payload: { value }
-    });
   });
 
   return { seed, outputs };
