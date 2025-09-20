@@ -19,10 +19,8 @@ export function installFakeClock(): void {
   };
 
   const OriginalDate = Date;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  // @ts-expect-error augment Date constructor
-  global.Date = class extends OriginalDate {
-    constructor(...args: any[]) {
+  class FakeDate extends OriginalDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
       if (args.length === 0) {
         super(Date.now());
       } else {
@@ -32,7 +30,8 @@ export function installFakeClock(): void {
     static now() {
       return Date.now();
     }
-  } as DateConstructor;
+  }
+  global.Date = FakeDate as DateConstructor;
 
   if (global.performance && typeof global.performance.now === 'function') {
     const startPerf = global.performance.now();
