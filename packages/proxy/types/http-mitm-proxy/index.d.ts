@@ -39,5 +39,10 @@ declare module 'http-mitm-proxy' {
     onRequest(handler: (ctx: IContext, callback: ErrorCallback) => void): void;
   }
 
-  export default function createProxy(): IProxy;
+  export interface ProxyConstructor {
+    new (): IProxy;
+  }
+
+  const Proxy: ProxyConstructor;
+  export default Proxy;
 }

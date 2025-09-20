@@ -64,7 +64,7 @@ export class EgressProxy {
       ? resolve(options.sslCacheDir)
       : resolve(dirname(this.caCertPath), '.proxy-ca-cache');
     this.logger = options.logger ?? ((message) => console.warn(`[proxy] ${message}`));
-    this.proxy = ProxyFactory();
+    this.proxy = new ProxyFactory();
   }
 
   async start(): Promise<EgressProxyStartResult> {
