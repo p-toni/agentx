@@ -50,6 +50,34 @@ A pnpm + TypeScript monorepo for building deterministic agent tooling, including
 - Turborepo orchestrates build/lint/test/dev pipelines with caching.
 - Devcontainer preconfigures Ubuntu, Node 20, Docker-in-Docker, and pnpm.
 
+### Deterministic runner
+
+The `agent-run` CLI orchestrates fully deterministic executions inside Docker. It
+spawns the proxy (record or replay), wires `HTTP(S)_PROXY` for the container,
+seeds RNG/clock (`AGENT_SEED`, `AGENT_START_TIME`), snapshots filesystem diffs,
+and emits a trace bundle (`.tgz`).
+
+```
+# Record
+pnpm --filter @deterministic-agent-lab/runner build
+node apps/runner/dist/agent-run.js record \
+  --image node:20-alpine \
+  --bundle /tmp/echo-record.tgz \
+  --allow policy.yaml \
+  --base base.tar \
+  --seed 42 \
+  node echo.js "  hello  "
+
+# Replay (bundle hashes can be compared via @deterministic-agent-lab/trace)
+node apps/runner/dist/agent-run.js replay \
+  --bundle /tmp/echo-record.tgz \
+  --output /tmp/echo-replay.tgz
+```
+
+Node agents can import `apps/runner/src/fake-clock` and call
+`installFakeClock()` on bootstrap to ensure `Date.now()` and zero-argument
+`new Date()` are derived from `AGENT_START_TIME` instead of wall-clock time.
+
 ## Continuous Integration
 
 GitHub Actions workflow installs pnpm, restores pnpm/Turborepo caches, and runs `pnpm lint`, `pnpm build`, and `pnpm test` on every push and pull request.
