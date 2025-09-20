@@ -1,0 +1,19 @@
+{
+  "name": "@deterministic-agent-lab/runner",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "deterministic-agent-runner": "dist/index.js"
+  },
+  "dependencies": {
+    "@deterministic-agent-lab/journal": "workspace:*",
+    "@deterministic-agent-lab/replay": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
+  }
+}

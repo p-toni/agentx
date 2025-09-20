@@ -1,0 +1,12 @@
+{
+  "name": "@deterministic-agent-lab/journal",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
+  }
+}
