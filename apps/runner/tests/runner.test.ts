@@ -7,6 +7,8 @@ import { hashBundle, openBundle } from '@deterministic-agent-lab/trace';
 import type { TraceBundle } from '@deterministic-agent-lab/trace';
 import { runAgent } from '../src/index';
 
+const tempDirs: string[] = [];
+
 describe('runAgent', () => {
   it('produces deterministic outputs for a seed', () => {
     const first = runAgent(7);
@@ -18,7 +20,6 @@ describe('runAgent', () => {
 });
 
 describe('agent-run CLI', () => {
-  const tempDirs: string[] = [];
   let cliPath: string;
   let dockerAvailable = true;
 

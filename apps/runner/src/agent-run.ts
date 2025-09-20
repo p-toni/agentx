@@ -196,7 +196,7 @@ program
 
     const bundleRoot = await mkdtemp(path.join(os.tmpdir(), 'agent-replay-bundle-'));
     await createBundle(bundleRoot, {
-      createdAt: new Date().toISOString(),
+      createdAt: manifest.createdAt ?? new Date().toISOString(),
       metadata: {
         mode: 'replay',
         replayOf: path.resolve(options.bundle),
@@ -428,7 +428,7 @@ async function recreateWorkspace(bundleRoot: string, fsDiffPath: string) {
   }
 
   const baseTarPath = path.join(root, 'base.tar');
-  await createTar(lowerDir, baseTarPath);
+  await fs.copyFile(baseTar, baseTarPath);
   return { root, lowerDir, workDir, baseTarPath };
 }
 
