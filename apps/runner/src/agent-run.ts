@@ -222,13 +222,19 @@ program
 
     const outputPath = path.resolve(options.output);
     await tarDirectory(bundleRoot, outputPath);
-    await cleanupWorkspace(workspace);
-    await removeArtifacts(proxyArtifacts);
-    await removeExtraction(extracted);
+    let originalHash = '';
+    let replayHash = '';
 
-    const originalHash = await hashBundle(bundle);
-    const replayBundle = await openBundle(bundleRoot);
-    const replayHash = await hashBundle(replayBundle);
+    try {
+      originalHash = await hashBundle(bundle);
+      const replayBundle = await openBundle(bundleRoot);
+      replayHash = await hashBundle(replayBundle);
+    } finally {
+      await cleanupWorkspace(workspace);
+      await removeArtifacts(proxyArtifacts);
+      await removeExtraction(extracted);
+    }
+
     console.log(`Original hash: ${originalHash}`);
     console.log(`Replay hash:   ${replayHash}`);
 
