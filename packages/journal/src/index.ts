@@ -271,7 +271,7 @@ export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceip
   }
 
   async rollback(
-    _intent: Intent<FileWritePayload, FileWriteReceipt>,
+    intent: Intent<FileWritePayload, FileWriteReceipt>,
     prepared: FileWritePrepared
   ): Promise<void> {
     if (prepared.existed && prepared.previousContent) {
@@ -282,6 +282,8 @@ export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceip
       }
     } else if (!prepared.existed) {
       await fs.rm(prepared.absolutePath, { force: true });
+    } else {
+      labelIntentRequiresManualReview(intent);
     }
   }
 }
@@ -296,12 +298,21 @@ export interface HttpPostReceipt {
   readonly status: number;
   readonly idempotencyKey: string;
   readonly responseHash: string;
+  readonly metadata?: HttpPostResponseMetadata;
+}
+
+interface HttpPostResponseMetadata {
+  readonly resourceId?: string;
+  readonly location?: string;
+  readonly rollbackMethod?: 'DELETE' | 'POST';
+  readonly rollbackPath?: string;
 }
 
 interface HttpPostPrepared {
   readonly url: string;
   readonly headers: Record<string, string>;
   readonly bodyText: string;
+  readonly idempotencyKey: string;
 }
 
 export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, HttpPostPrepared> {
@@ -324,9 +335,9 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
       ...(intent.payload.headers ?? {})
     };
 
-    if (!headers['Idempotency-Key'] && !headers['idempotency-key']) {
-      headers['Idempotency-Key'] = intent.idempotencyKey;
-    }
+    const existingIdempotency = headers['Idempotency-Key'] ?? headers['idempotency-key'];
+    const idempotencyKey = existingIdempotency ?? intent.idempotencyKey;
+    headers['Idempotency-Key'] = idempotencyKey;
 
     const bodyText =
       typeof intent.payload.body === 'string'
@@ -336,7 +347,8 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
     return {
       url: intent.payload.url,
       headers,
-      bodyText
+      bodyText,
+      idempotencyKey
     };
   }
 
@@ -352,19 +364,109 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
 
     const responseBody = await response.text();
     const responseHash = createHash('sha256').update(responseBody).digest('hex');
-    const idempotencyKey =
-      prepared.headers['Idempotency-Key'] ?? prepared.headers['idempotency-key'] ?? intent.idempotencyKey;
+    const idempotencyKey = prepared.idempotencyKey;
+    const metadata = extractResponseMetadata(response, responseBody);
 
     return {
       status: response.status,
       idempotencyKey,
-      responseHash
+      responseHash,
+      metadata
     };
   }
 
-  async rollback(): Promise<void> {
-    // Intentionally a no-op. Future implementations may enqueue compensating actions.
+  async rollback(
+    intent: Intent<HttpPostPayload, HttpPostReceipt>,
+    prepared: HttpPostPrepared,
+    _context: DriverContext
+  ): Promise<void> {
+    const metadata = prepared.metadata;
+    if (!metadata) {
+      labelIntentRequiresManualReview(intent, 'non-reversible');
+      return;
+    }
+
+    const target = buildRollbackTarget(prepared.url, metadata);
+    if (!target) {
+      labelIntentRequiresManualReview(intent, 'non-reversible');
+      return;
+    }
+
+    const { method, url } = target;
+    try {
+      await fetch(url, {
+        method,
+        headers: {
+          'Idempotency-Key': `${prepared.idempotencyKey}-rollback`
+        }
+      });
+    } catch (error) {
+      console.warn(`Rollback attempt for ${url} failed: ${(error as Error).message}`);
+      labelIntentRequiresManualReview(intent, 'rollback_failed');
+    }
   }
+}
+
+function extractResponseMetadata(response: Response, bodyText: string): HttpPostResponseMetadata | undefined {
+  const location = response.headers.get('location') ?? undefined;
+  let resourceId: string | undefined;
+  let rollbackMethod: 'DELETE' | 'POST' | undefined;
+  let rollbackPath: string | undefined;
+
+  try {
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    const bodyId = typeof parsed.id === 'string' ? parsed.id : undefined;
+    const rollback = parsed.rollback as { method?: string; path?: string } | undefined;
+    resourceId = bodyId;
+    if (rollback?.method === 'POST' && typeof rollback.path === 'string') {
+      rollbackMethod = 'POST';
+      rollbackPath = rollback.path;
+    }
+  } catch {
+    // ignore JSON parse errors
+  }
+
+  if (!location && !resourceId && !rollbackPath) {
+    return undefined;
+  }
+
+  return {
+    location,
+    resourceId,
+    rollbackMethod,
+    rollbackPath
+  };
+}
+
+function buildRollbackTarget(url: string, metadata: HttpPostResponseMetadata): { method: 'DELETE' | 'POST'; url: string } | null {
+  if (metadata.rollbackPath) {
+    const base = new URL(url);
+    const targetUrl = new URL(metadata.rollbackPath, base);
+    return { method: metadata.rollbackMethod ?? 'POST', url: targetUrl.toString() };
+  }
+
+  if (metadata.location) {
+    return { method: 'DELETE', url: metadata.location };
+  }
+
+  if (metadata.resourceId) {
+    const base = new URL(url);
+    base.pathname = new URL(metadata.resourceId, base).pathname;
+    return { method: 'DELETE', url: base.toString() };
+  }
+
+  return null;
+}
+
+function labelIntentRequiresManualReview(intent: Intent<HttpPostPayload, HttpPostReceipt>, reason: string): void {
+  const metadata = intent.metadata ?? {};
+  const labels = new Set<string>(Array.isArray(metadata.labels) ? (metadata.labels as string[]) : []);
+  labels.add('manual_remediation');
+  intent.metadata = {
+    ...metadata,
+    labels: Array.from(labels),
+    rollbackReason: reason
+  };
 }
 
 export interface LlmCallPayload {
