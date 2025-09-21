@@ -207,23 +207,27 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
   return fastify;
 }
 
-async function extractBundleBuffer(body: unknown): Promise<Buffer | null> {
+async function extractBundleBuffer(body: unknown): Promise<Uint8Array | null> {
   if (!body) {
     return null;
   }
   if (Buffer.isBuffer(body)) {
-    return body;
+    return bufferToUint8Array(body);
   }
   if (typeof body === 'object') {
     const maybe = body as { bundle?: string };
     if (maybe.bundle && typeof maybe.bundle === 'string') {
-      return Buffer.from(maybe.bundle, 'base64');
+      return bufferToUint8Array(Buffer.from(maybe.bundle, 'base64'));
     }
   }
   if (typeof body === 'string') {
-    return Buffer.from(body, 'base64');
+    return bufferToUint8Array(Buffer.from(body, 'base64'));
   }
   return null;
+}
+
+function bufferToUint8Array(buffer: Buffer): Uint8Array {
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }
 
 interface IntentWithId extends LoadedIntent {

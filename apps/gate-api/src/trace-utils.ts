@@ -33,3 +33,5 @@ function extractMetadata(intent: IntentRecord): Record<string, unknown> | undefi
   }
   return record.metadata as Record<string, unknown>;
 }
+
+export type { TraceBundle } from '@deterministic-agent-lab/trace';

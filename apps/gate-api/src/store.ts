@@ -67,7 +67,11 @@ export class GateStore {
     await mkdir(this.bundlesDir, { recursive: true });
   }
 
-  async persistBundle(id: string, contents: Buffer, metadata?: Record<string, unknown>): Promise<BundleRecord> {
+  async persistBundle(
+    id: string,
+    contents: NodeJS.ArrayBufferView,
+    metadata?: Record<string, unknown>
+  ): Promise<BundleRecord> {
     await this.ensureDataDirs();
     const filePath = path.join(this.bundlesDir, `${id}.tgz`);
     await writeFile(filePath, contents);
