@@ -380,6 +380,7 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
     prepared: HttpPostPrepared,
     _context: DriverContext
   ): Promise<void> {
+    void _context;
     const metadata = prepared.metadata;
     if (!metadata) {
       labelIntentRequiresManualReview(intent, 'non-reversible');
