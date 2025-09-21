@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 
@@ -30,6 +31,8 @@ export class GateStore {
 
   constructor(private readonly dataDir: string) {
     this.bundlesDir = path.join(this.dataDir, 'bundles');
+    mkdirSync(this.dataDir, { recursive: true });
+    mkdirSync(this.bundlesDir, { recursive: true });
     this.db = new Database(path.join(this.dataDir, 'gate-api.db'));
     this.initialise();
   }
@@ -105,6 +108,20 @@ export class GateStore {
     };
   }
 
+  listBundles(): BundleRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT id, path, created_at as createdAt, metadata_json as metadataJson FROM bundles ORDER BY datetime(created_at) DESC'
+      )
+      .all() as { id: string; path: string; createdAt: string; metadataJson: string | null }[];
+    return rows.map((row) => ({
+      id: row.id,
+      path: row.path,
+      createdAt: row.createdAt,
+      metadata: row.metadataJson ? (JSON.parse(row.metadataJson) as Record<string, unknown>) : undefined
+    }));
+  }
+
   recordApproval(record: ApprovalRecord): void {
     this.db
       .prepare(
@@ -159,6 +176,13 @@ export class GateStore {
       receipt: row.receiptJson ? JSON.parse(row.receiptJson) : null,
       recordedAt: row.recordedAt
     }));
+  }
+
+  hasReceipts(bundleId: string): boolean {
+    const row = this.db
+      .prepare('SELECT COUNT(1) as count FROM receipts WHERE bundle_id = ?')
+      .get(bundleId) as { count: number } | undefined;
+    return (row?.count ?? 0) > 0;
   }
 }
 

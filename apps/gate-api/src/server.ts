@@ -1,11 +1,12 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import path from 'node:path';
 import { Journal, type Driver, type Intent } from '@deterministic-agent-lab/journal';
 import { FileWriteDriver, HttpPostDriver, LlmCallDriver } from '@deterministic-agent-lab/journal';
-import { GateStore, generateIntentId } from './store';
-import { loadPlanSummary, type LoadedIntent } from './bundle';
+import { GateStore, generateIntentId, type ApprovalRecord } from './store';
+import { loadPlanSummary, type LoadedIntent, type FileDiffSummary, type PromptRecord } from './bundle';
 import { evaluatePolicy, loadPolicy, type PolicyEvaluation } from './policy';
 
 export interface GateApiOptions {
@@ -18,14 +19,26 @@ export interface GateApiOptions {
 
 export type DriverFactory = (intent: LoadedIntent) => Driver<unknown, unknown, unknown>;
 
+export interface BundleSummary {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly status: BundleStatus;
+  readonly approval?: { actor: string; policyVersion: string; approvedAt: string } | null;
+}
+
+export type BundleStatus = 'pending' | 'approved' | 'committed';
+
 export interface PlanResponse {
   readonly bundleId: string;
   readonly createdAt: string;
   readonly intents: Array<PlanIntentSummary>;
-  readonly fsDiff: { changed: string[]; deleted: string[] };
+  readonly fsDiff: FileDiffSummary;
   readonly network: PolicyEvaluation['network'];
+  readonly networkHar?: string | null;
   readonly policy: PolicyEvaluation;
   readonly approval?: { actor: string; policyVersion: string; approvedAt: string } | null;
+  readonly prompts: PromptRecord[];
+  readonly status: BundleStatus;
 }
 
 export interface PlanIntentSummary {
@@ -38,12 +51,29 @@ export interface PlanIntentSummary {
 
 export function buildServer(options: GateApiOptions): FastifyInstance {
   const fastify = Fastify();
+  fastify.register(cors, { origin: true });
   const dataDir = options.dataDir ?? path.join(process.cwd(), '.gate');
   const store = new GateStore(dataDir);
   const journal = options.journal ?? new Journal({ filePath: path.join(dataDir, 'journal.jsonl') });
   const driverRegistry = options.drivers ?? createDefaultDriverRegistry();
   const clock = options.clock ?? (() => new Date());
   const policyPath = options.policyPath;
+
+  fastify.get('/bundles', async () => {
+    const bundles = store.listBundles();
+    return {
+      bundles: bundles.map((bundle) => {
+        const approval = store.getApproval(bundle.id) ?? null;
+        const status = determineStatus(store, bundle.id, approval);
+        return {
+          id: bundle.id,
+          createdAt: bundle.createdAt,
+          status,
+          approval
+        } satisfies BundleSummary;
+      })
+    };
+  });
 
   fastify.post('/bundles', async (request, reply) => {
     const payload = await extractBundleBuffer(request.body);
@@ -71,6 +101,7 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     const policy = await loadPolicy(policyPath);
     const evaluation = evaluatePolicy(policy, plan.intents, plan.network);
     const approval = store.getApproval(bundleId) ?? null;
+    const status = determineStatus(store, bundleId, approval);
 
     const response: PlanResponse = {
       bundleId,
@@ -84,8 +115,11 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
       })),
       fsDiff: plan.fsDiff,
       network: evaluation.network,
+      networkHar: plan.networkHar,
       policy: evaluation,
-      approval
+      approval,
+      prompts: plan.prompts,
+      status
     };
 
     return response;
@@ -255,6 +289,16 @@ function toJournalIntent(bundleId: string, intent: IntentWithId): Intent<unknown
       intentId: intent.id
     }
   };
+}
+
+function determineStatus(store: GateStore, bundleId: string, approval: ApprovalRecord | null): BundleStatus {
+  if (store.hasReceipts(bundleId)) {
+    return 'committed';
+  }
+  if (approval) {
+    return 'approved';
+  }
+  return 'pending';
 }
 
 function resolveDriver(registry: Record<string, DriverFactory>, intent: LoadedIntent): Driver<unknown, unknown, unknown> {

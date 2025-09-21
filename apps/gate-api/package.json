@@ -7,6 +7,7 @@
     "@deterministic-agent-lab/journal": "workspace:*",
     "@deterministic-agent-lab/trace": "workspace:*",
     "better-sqlite3": "^9.4.1",
+    "@fastify/cors": "^9.0.0",
     "fastify": "^4.25.2",
     "yaml": "^2.8.0"
   },

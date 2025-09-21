@@ -99,11 +99,18 @@ describe('transaction gate API', () => {
     const bundleId = (upload.json() as { bundleId: string }).bundleId;
     expect(bundleId).toBeTruthy();
 
+    const listPending = await server.inject({ method: 'GET', url: '/bundles' });
+    expect(listPending.statusCode).toBe(200);
+    const pendingJson = listPending.json() as { bundles: Array<{ id: string; status: string }> };
+    expect(pendingJson.bundles[0]?.status).toBe('pending');
+
     const planResponse = await server.inject({ method: 'GET', url: `/bundles/${bundleId}/plan` });
     expect(planResponse.statusCode).toBe(200);
     const plan = planResponse.json() as any;
     expect(plan.policy.requiresApproval).toBe(true);
     expect(plan.intents).toHaveLength(1);
+    expect(plan.fsDiff.changed).toBeInstanceOf(Array);
+    expect(plan.status).toBe('pending');
 
     const commitWithoutApproval = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/commit` });
     expect(commitWithoutApproval.statusCode).toBe(403);
@@ -115,6 +122,11 @@ describe('transaction gate API', () => {
     });
     expect(approval.statusCode).toBe(200);
 
+    const listApproved = await server.inject({ method: 'GET', url: '/bundles' });
+    expect(listApproved.statusCode).toBe(200);
+    const approvedJson = listApproved.json() as { bundles: Array<{ id: string; status: string }> };
+    expect(approvedJson.bundles[0]?.status).toBe('approved');
+
     const commit = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/commit` });
     expect(commit.statusCode).toBe(200);
     expect(calls).toEqual(['plan', 'validate', 'prepare', 'commit']);
@@ -122,6 +134,11 @@ describe('transaction gate API', () => {
     const revert = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/revert` });
     expect(revert.statusCode).toBe(200);
     expect(calls).toContain('rollback:receipt-applied');
+
+    const listCommitted = await server.inject({ method: 'GET', url: '/bundles' });
+    expect(listCommitted.statusCode).toBe(200);
+    const committedJson = listCommitted.json() as { bundles: Array<{ id: string; status: string }> };
+    expect(committedJson.bundles[0]?.status).toBe('committed');
 
     await server.close();
   });
