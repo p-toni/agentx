@@ -200,6 +200,7 @@ export interface FileWritePayload {
 export interface FileWriteReceipt {
   readonly path: string;
   readonly sha256: string;
+  readonly previousHash?: string | null;
 }
 
 interface FileWritePrepared {
@@ -207,6 +208,7 @@ interface FileWritePrepared {
   readonly previousContent: Uint8Array | null;
   readonly previousMode?: number;
   readonly existed: boolean;
+  readonly previousHash?: string;
 }
 
 export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceipt, FileWritePrepared> {
@@ -230,19 +232,22 @@ export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceip
         throw new Error(`Cannot write non-file path: ${intent.payload.path}`);
       }
 
-      const previousContent = new Uint8Array(await fs.readFile(absolutePath));
+      const previousBuffer = await fs.readFile(absolutePath);
+      const previousBase64 = previousBuffer.toString('base64');
       return {
         absolutePath,
-        previousContent,
+        previousContent: new Uint8Array(previousBuffer),
         previousMode: stats.mode,
-        existed: true
+        existed: true,
+        previousHash: createHash('sha256').update(previousBase64, 'utf8').digest('hex')
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return {
           absolutePath,
           previousContent: null,
-          existed: false
+          existed: false,
+          previousHash: undefined
         };
       }
 
@@ -256,17 +261,17 @@ export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceip
   ): Promise<FileWriteReceipt> {
     const contentBuffer = textEncoder.encode(intent.payload.content);
     await fs.mkdir(dirname(prepared.absolutePath), { recursive: true });
-    await fs.writeFile(prepared.absolutePath, contentBuffer, {
-      mode: intent.payload.mode
-    });
+    await fs.writeFile(prepared.absolutePath, contentBuffer);
 
     if (typeof intent.payload.mode === 'number') {
       await fs.chmod(prepared.absolutePath, intent.payload.mode);
     }
 
+    const sha = createHash('sha256').update(intent.payload.content, 'utf8').digest('hex');
     return {
       path: prepared.absolutePath,
-      sha256: createHash('sha256').update(contentBuffer).digest('hex')
+      sha256: sha,
+      previousHash: prepared.previousHash ?? null
     };
   }
 
@@ -283,7 +288,7 @@ export class FileWriteDriver implements Driver<FileWritePayload, FileWriteReceip
     } else if (!prepared.existed) {
       await fs.rm(prepared.absolutePath, { force: true });
     } else {
-      labelIntentRequiresManualReview(intent);
+      console.warn(`Rollback could not restore ${prepared.absolutePath}. Manual remediation required.`);
     }
   }
 }
@@ -309,10 +314,11 @@ interface HttpPostResponseMetadata {
 }
 
 interface HttpPostPrepared {
-  readonly url: string;
-  readonly headers: Record<string, string>;
-  readonly bodyText: string;
-  readonly idempotencyKey: string;
+  url: string;
+  headers: Record<string, string>;
+  bodyText: string;
+  idempotencyKey: string;
+  metadata?: HttpPostResponseMetadata;
 }
 
 export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, HttpPostPrepared> {
@@ -366,12 +372,15 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
     const responseHash = createHash('sha256').update(responseBody).digest('hex');
     const idempotencyKey = prepared.idempotencyKey;
     const metadata = extractResponseMetadata(response, responseBody);
+    if (metadata) {
+      prepared.metadata = metadata;
+    }
 
     return {
       status: response.status,
       idempotencyKey,
       responseHash,
-      metadata
+    metadata
     };
   }
 
@@ -460,14 +469,7 @@ function buildRollbackTarget(url: string, metadata: HttpPostResponseMetadata): {
 }
 
 function labelIntentRequiresManualReview(intent: Intent<HttpPostPayload, HttpPostReceipt>, reason: string): void {
-  const metadata = intent.metadata ?? {};
-  const labels = new Set<string>(Array.isArray(metadata.labels) ? (metadata.labels as string[]) : []);
-  labels.add('manual_remediation');
-  intent.metadata = {
-    ...metadata,
-    labels: Array.from(labels),
-    rollbackReason: reason
-  };
+  console.warn(`Intent ${intent.idempotencyKey} requires manual remediation (${reason}).`);
 }
 
 export interface LlmCallPayload {
