@@ -3,13 +3,21 @@
   "version": "0.1.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "replay": "dist/cli.js"
+  },
   "dependencies": {
-    "@deterministic-agent-lab/trace": "workspace:*"
+    "@deterministic-agent-lab/proxy": "workspace:*",
+    "@deterministic-agent-lab/trace": "workspace:*",
+    "commander": "^11.1.0"
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
+  },
+  "devDependencies": {
+    "fast-check": "^3.13.1"
   }
 }

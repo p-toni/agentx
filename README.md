@@ -7,7 +7,7 @@ A pnpm + TypeScript monorepo for building deterministic agent tooling, including
 - `packages/journal` — shared intent log models and driver SDK helpers.
 - `packages/proxy` — HTTP(S) allowlist proxy with record/replay hooks.
 - `packages/trace` — trace bundle format definitions with readers/writers.
-- `packages/replay` — deterministic replay utilities for network, clock, and RNG.
+- `packages/replay` — deterministic replay utilities (includes `replay verify` CLI plus Node/Python helpers for virtual clocks).
 - `apps/runner` — CLI entrypoint to run an agent inside a controlled container.
 - `apps/gate-api` — Fastify API surface for plan/approve/commit/revert flows.
 - `apps/gate-ui` — Next.js interface for reviewing diffs and approvals.
