@@ -64,3 +64,15 @@ These preloads install a virtual clock, seeded PRNG, and deterministic timer sch
 During recording they emit `clock.json` ticks (per runtime source) which are replayed to
 enforce identical event ordering. The runner persists those ticks in the trace bundle so
 replays can verify byte-for-byte output stability.
+
+## Filesystem Isolation
+
+`agent-run` confines workspace writes by mounting a private OverlayFS union when running
+on Linux. The lowerdir tracks the seeded base tarball, while all runtime mutations land in
+an upperdir that is copied verbatim into the trace bundle (`fs-diff/`). Containers execute
+with `--read-only` roots, `--cap-drop=ALL`, and only `/workspace` is writable; tmpfs mounts
+cover `/tmp`, `/run`, and `/var/tmp` for scratch space. Attempts to write outside the
+workspace (for example `/etc` or `$HOME`) fail with `EROFS`/`EACCES` and are surfaced as
+non-zero exits during record. When the host cannot mount OverlayFS (e.g. macOS), the runner
+falls back to its previous copy-on-write mirrors and logs a warning so operators can audit
+the reduced isolation guarantees.

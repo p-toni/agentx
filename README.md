@@ -84,6 +84,14 @@ Agent executions run in deterministic mode by default (disable with
 exports seeded clock/RNG environment variables, and captures virtual clock ticks
 for replay verification.
 
+On Linux hosts the runner mounts workspaces through OverlayFS so every write
+lands in an isolated upperdir that is archived with the trace. Container roots
+run with `--read-only`, `--cap-drop=ALL`, and only `/workspace` is writable via
+the bound overlay mount (tmpfs mounts cover `/tmp`, `/run`, and `/var/tmp`).
+Attempts to touch paths such as `/etc` or `$HOME` return read-only errors. When
+OverlayFS is unavailable (for example on macOS hosts) the runner falls back to
+its previous copy-on-write workspace strategy and logs a warning.
+
 Node agents can preload deterministic timers via:
 
 ```

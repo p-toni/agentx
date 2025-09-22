@@ -37,7 +37,7 @@ interface DockerRunResult extends DockerResult {
 interface RunDockerOptions {
   image: string;
   command: string[];
-  workdir: string;
+  workspacePath: string;
   seed: number;
   startTime: string;
   proxyPort: number;
@@ -45,6 +45,18 @@ interface RunDockerOptions {
   mode: 'record' | 'replay';
   deterministic: boolean;
   clockData?: ClockSnapshot;
+}
+
+type WorkspaceMode = 'overlay' | 'copy';
+
+interface WorkspaceInfo {
+  root: string;
+  lowerDir: string;
+  mountDir: string;
+  baseTarPath: string;
+  mode: WorkspaceMode;
+  upperDir?: string;
+  overlayWorkDir?: string;
 }
 
 interface ProxyHandle {
@@ -112,7 +124,7 @@ program
       dockerResult = await runDocker({
         image: options.image,
         command: cmd,
-        workdir: workspace.workDir,
+        workspacePath: workspace.mountDir,
         seed,
         startTime,
         proxyPort: proxyHandle.port,
@@ -128,7 +140,7 @@ program
       throw new Error('Docker run did not produce a result');
     }
 
-    const fsDiff = await createFilesystemDiff(workspace.lowerDir, workspace.workDir);
+    const fsDiff = await createFilesystemDiff(workspace);
     const diffEntries: Record<string, Buffer | string> = {
       'base.tar': await fs.readFile(workspace.baseTarPath),
       'diff/deleted.json': JSON.stringify(fsDiff.deleted, null, 2)
@@ -226,7 +238,7 @@ program
       dockerResult = await runDocker({
         image: envData.image,
         command: envData.command,
-        workdir: workspace.workDir,
+        workspacePath: workspace.mountDir,
         seed: envData.seed,
         startTime: envData.startTime,
         proxyPort: proxyHandle.port,
@@ -243,7 +255,7 @@ program
       throw new Error('Docker run did not produce a result');
     }
 
-    const fsDiff = await createFilesystemDiff(workspace.lowerDir, workspace.workDir);
+    const fsDiff = await createFilesystemDiff(workspace);
     const diffEntries: Record<string, Buffer | string> = {
       'base.tar': await fs.readFile(workspace.baseTarPath),
       'diff/deleted.json': JSON.stringify(fsDiff.deleted, null, 2)
@@ -397,7 +409,23 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     envVars.set('AGENT_CLOCK_MODE', 'deterministic');
   }
 
-  const args = ['run', '--rm', '--network=host'];
+  const args = [
+    'run',
+    '--rm',
+    '--network=host',
+    '--read-only',
+    '--security-opt',
+    'no-new-privileges:true',
+    '--cap-drop=ALL',
+    '--mount',
+    `type=bind,src=${options.workspacePath},dst=/workspace,readonly=false,bind-propagation=rprivate`,
+    '--tmpfs',
+    '/tmp:rw,exec',
+    '--tmpfs',
+    '/run:rw',
+    '--tmpfs',
+    '/var/tmp:rw'
+  ];
 
   if (options.deterministic) {
     args.push('--cpus=1', '--cpu-shares=1024', '--cpuset-cpus=0');
@@ -407,11 +435,11 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     args.push('-e', `${key}=${value}`);
   }
 
-  args.push('-v', `${options.workdir}:/workspace`, '-w', '/workspace');
+  args.push('-w', '/workspace');
 
   const commandArgs = [...args, options.image, ...options.command];
 
-  const agentDir = path.join(options.workdir, '.agent');
+  const agentDir = path.join(options.workspacePath, '.agent');
   await fs.mkdir(agentDir, { recursive: true });
   await fs.copyFile(options.caCertPath, path.join(agentDir, 'ca.pem'));
 
@@ -504,59 +532,113 @@ function normaliseClockSnapshot(clock: ClockSnapshot | undefined, initialTime: s
   return base as ClockSnapshot;
 }
 
-async function createWorkspace(baseTar?: string) {
+async function createWorkspace(baseTar?: string): Promise<WorkspaceInfo> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-workspace-'));
   const lowerDir = path.join(root, 'lower');
-  const workDir = path.join(root, 'work');
   await fs.mkdir(lowerDir, { recursive: true });
-  await fs.mkdir(workDir, { recursive: true });
 
   if (baseTar) {
     await extractTar(path.resolve(baseTar), lowerDir);
   }
 
-  await copyLowerToWork(lowerDir, workDir);
   const baseTarPath = path.join(root, 'base.tar');
   await createTar(lowerDir, baseTarPath);
 
-  return { root, lowerDir, workDir, baseTarPath };
+  return prepareWorkspace(root, lowerDir, baseTarPath);
 }
 
-async function recreateWorkspace(bundleRoot: string, fsDiffPath: string) {
+async function recreateWorkspace(bundleRoot: string, fsDiffPath: string): Promise<WorkspaceInfo> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-replay-workspace-'));
   const lowerDir = path.join(root, 'lower');
-  const workDir = path.join(root, 'work');
   await fs.mkdir(lowerDir, { recursive: true });
-  await fs.mkdir(workDir, { recursive: true });
 
-  const fsDiffRoot = path.join(bundleRoot, fsDiffPath);
+  const fsDiffRoot = path.join(bundleRoot, fsDiffPath.replace(/\/$/, ''));
   const baseTar = path.join(fsDiffRoot, 'base.tar');
   await extractTar(baseTar, lowerDir);
-  await copyLowerToWork(lowerDir, workDir);
+
+  const baseTarPath = path.join(root, 'base.tar');
+  await fs.copyFile(baseTar, baseTarPath);
+
+  const workspace = await prepareWorkspace(root, lowerDir, baseTarPath);
 
   const diffFilesDir = path.join(fsDiffRoot, 'diff', 'files');
   const deletedFile = path.join(fsDiffRoot, 'diff', 'deleted.json');
 
   if (await exists(diffFilesDir)) {
-    await applyDiffFiles(diffFilesDir, workDir);
+    await applyDiffFiles(diffFilesDir, workspace.mountDir);
   }
 
   if (await exists(deletedFile)) {
     const raw = await readFile(deletedFile, 'utf8');
     const deleted = JSON.parse(raw) as string[];
     for (const rel of deleted) {
-      const target = path.join(workDir, rel);
+      const target = path.join(workspace.mountDir, rel);
       await rm(target, { recursive: true, force: true });
     }
   }
 
-  const baseTarPath = path.join(root, 'base.tar');
-  await fs.copyFile(baseTar, baseTarPath);
-  return { root, lowerDir, workDir, baseTarPath };
+  return workspace;
 }
 
-async function cleanupWorkspace(workspace: { root: string }) {
+async function cleanupWorkspace(workspace: WorkspaceInfo) {
+  if (workspace.mode === 'overlay') {
+    try {
+      await runCommand('umount', [workspace.mountDir]);
+    } catch (error) {
+      console.warn(
+        `[agent-run] Failed to unmount overlay workspace ${workspace.mountDir}: ${(error as Error).message}`
+      );
+    }
+  }
+
   await rm(workspace.root, { recursive: true, force: true });
+}
+
+async function prepareWorkspace(root: string, lowerDir: string, baseTarPath: string): Promise<WorkspaceInfo> {
+  if (isLinuxHost()) {
+    const upperDir = path.join(root, 'upper');
+    const overlayWorkDir = path.join(root, 'overlay-work');
+    const mountDir = path.join(root, 'mnt');
+
+    try {
+      await fs.mkdir(upperDir, { recursive: true });
+      await fs.mkdir(overlayWorkDir, { recursive: true });
+      await fs.mkdir(mountDir, { recursive: true });
+      await mountOverlayWorkspace(lowerDir, upperDir, overlayWorkDir, mountDir);
+      return {
+        root,
+        lowerDir,
+        mountDir,
+        baseTarPath,
+        mode: 'overlay',
+        upperDir,
+        overlayWorkDir
+      };
+    } catch (error) {
+      console.warn(
+        `[agent-run] OverlayFS unavailable (${(error as Error).message}); falling back to copy-on-write workspace.`
+      );
+    }
+  }
+
+  const workDir = path.join(root, 'work');
+  await fs.mkdir(workDir, { recursive: true });
+  await copyLowerToWork(lowerDir, workDir);
+  return { root, lowerDir, mountDir: workDir, baseTarPath, mode: 'copy' };
+}
+
+function isLinuxHost(): boolean {
+  return process.platform === 'linux';
+}
+
+async function mountOverlayWorkspace(
+  lowerDir: string,
+  upperDir: string,
+  workDir: string,
+  mountDir: string
+): Promise<void> {
+  const options = `lowerdir=${lowerDir},upperdir=${upperDir},workdir=${workDir}`;
+  await runCommand('mount', ['-t', 'overlay', 'overlay', '-o', options, mountDir]);
 }
 
 async function removeExtraction(extracted: { root: string }) {
@@ -624,21 +706,33 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-async function createFilesystemDiff(lowerDir: string, workDir: string) {
+async function createFilesystemDiff(workspace: WorkspaceInfo) {
+  if (workspace.mode === 'overlay' && workspace.upperDir) {
+    return collectOverlayDiff(workspace.upperDir, workspace.lowerDir);
+  }
+
+  return createCopyModeDiff(workspace.lowerDir, workspace.mountDir);
+}
+
+async function createCopyModeDiff(lowerDir: string, workDir: string) {
   const files: { relativePath: string; absolutePath: string }[] = [];
   const deleted: string[] = [];
 
   const walk = async (dir: string) => {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === '.agent') {
+      const absolute = path.join(dir, entry.name);
+      const relative = normaliseRelativePath(path.relative(workDir, absolute));
+      if (!relative || shouldSkipAgentPath(relative)) {
+        if (entry.isDirectory()) {
+          await walk(absolute);
+        }
         continue;
       }
-      const absolute = path.join(dir, entry.name);
-      const relative = path.relative(workDir, absolute);
+
       if (entry.isDirectory()) {
         await walk(absolute);
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
         const lowerPath = path.join(lowerDir, relative);
         if (await exists(lowerPath)) {
           const [a, b] = await Promise.all([readFile(absolute), readFile(lowerPath)]);
@@ -658,7 +752,14 @@ async function createFilesystemDiff(lowerDir: string, workDir: string) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const absolute = path.join(dir, entry.name);
-      const relative = path.relative(lowerDir, absolute);
+      const relative = normaliseRelativePath(path.relative(lowerDir, absolute));
+      if (!relative || shouldSkipAgentPath(relative)) {
+        if (entry.isDirectory()) {
+          await findDeleted(absolute);
+        }
+        continue;
+      }
+
       const target = path.join(workDir, relative);
       if (entry.isDirectory()) {
         await findDeleted(absolute);
@@ -671,6 +772,90 @@ async function createFilesystemDiff(lowerDir: string, workDir: string) {
   await findDeleted(lowerDir);
 
   return { files, deleted };
+}
+
+async function collectOverlayDiff(upperDir: string, lowerDir: string) {
+  const files: { relativePath: string; absolutePath: string }[] = [];
+  const deleted = new Set<string>();
+
+  const walk = async (dir: string) => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolute = path.join(dir, entry.name);
+      const relative = normaliseRelativePath(path.relative(upperDir, absolute));
+
+      if (entry.name === '.wh..wh..opq') {
+        const parentRel = normaliseRelativePath(path.relative(upperDir, dir));
+        await collectLowerDeletions(lowerDir, parentRel, deleted);
+        continue;
+      }
+
+      if (entry.name.startsWith('.wh.')) {
+        const parentRel = normaliseRelativePath(path.relative(upperDir, dir));
+        const targetName = entry.name.slice(4);
+        const targetRel = parentRel ? path.join(parentRel, targetName) : targetName;
+        if (!shouldSkipAgentPath(targetRel)) {
+          deleted.add(normaliseRelativePath(targetRel));
+        }
+        continue;
+      }
+
+      if ((relative && shouldSkipAgentPath(relative)) || (!relative && entry.name === '.agent')) {
+        if (entry.isDirectory()) {
+          await walk(absolute);
+        }
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await walk(absolute);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        if (relative) {
+          files.push({ relativePath: relative, absolutePath: absolute });
+        }
+      }
+    }
+  };
+
+  await walk(upperDir);
+
+  return { files, deleted: Array.from(deleted).sort() };
+}
+
+function normaliseRelativePath(relativePath: string): string {
+  const segments = relativePath.split(path.sep).filter((segment) => segment.length > 0 && segment !== '.');
+  return segments.join(path.sep);
+}
+
+function shouldSkipAgentPath(relativePath: string): boolean {
+  if (!relativePath) {
+    return false;
+  }
+
+  const [head] = relativePath.split(path.sep);
+  return head === '.agent';
+}
+
+async function collectLowerDeletions(lowerDir: string, relativeDir: string, deleted: Set<string>): Promise<void> {
+  const baseDir = relativeDir ? path.join(lowerDir, relativeDir) : lowerDir;
+  if (!(await exists(baseDir))) {
+    return;
+  }
+
+  const entries = await fs.readdir(baseDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const nextRel = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
+    const normalised = normaliseRelativePath(nextRel);
+    if (!normalised || shouldSkipAgentPath(normalised)) {
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      await collectLowerDeletions(lowerDir, normalised, deleted);
+    } else {
+      deleted.add(normalised);
+    }
+  }
 }
 
 async function extractBundle(bundlePath: string) {
@@ -718,4 +903,26 @@ async function applyDiffFiles(diffDir: string, workDir: string) {
       await fs.copyFile(source, target);
     }
   }
+}
+
+async function runCommand(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const stderrChunks: string[] = [];
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk.toString());
+    });
+
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        const message = stderrChunks.join('').trim();
+        const suffix = message.length > 0 ? `: ${message}` : '';
+        reject(new Error(`${command} exited with code ${code ?? 0}${suffix}`));
+      }
+    });
+  });
 }

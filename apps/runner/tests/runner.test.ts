@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { cp, mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -144,6 +144,120 @@ describe('agent-run CLI', () => {
 
     expect(hashA).toBe(hashB);
   }, 180_000);
+
+  it('denies writes outside the workspace mount', async () => {
+    if (!dockerAvailable) {
+      return;
+    }
+
+    const workspace = await mkdtemp(path.join(tmpdir(), 'agent-runner-escape-'));
+    tempDirs.push(workspace);
+
+    const scriptPath = path.join(workspace, 'escape.js');
+    await writeFile(
+      scriptPath,
+      `const fs = require('fs');\nconst path = require('path');\nconst targets = ['/etc/escape-test', path.join(process.env.HOME || '/root', 'escape-test')];\nfor (const target of targets) {\n  try {\n    fs.writeFileSync(target, 'blocked');\n    console.error('unexpected write to', target);\n    process.exit(2);\n  } catch (error) {\n    console.error('write blocked for', target, error.code || error.message);\n  }\n}\nprocess.exit(1);\n`
+    );
+
+    const baseTar = path.join(workspace, 'base.tar');
+    await exec('tar', ['-cf', baseTar, '-C', workspace, 'escape.js']);
+
+    const policyPath = path.join(workspace, 'policy.yaml');
+    await writeFile(
+      policyPath,
+      `rules:\n  - host: 127.0.0.1:80\n    methods: ['GET']\n`
+    );
+
+    const recordBundle = path.join(workspace, 'escape-record.tgz');
+    const child = spawn(
+      'node',
+      [
+        cliPath,
+        'record',
+        '--image',
+        'node:20-alpine',
+        '--bundle',
+        recordBundle,
+        '--allow',
+        policyPath,
+        '--base',
+        baseTar,
+        '--seed',
+        '11',
+        'node',
+        'escape.js'
+      ],
+      { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+
+    let stderr = '';
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    await new Promise<void>((resolve) => child.once('close', () => resolve()));
+
+    expect(child.exitCode ?? 0).not.toBe(0);
+    expect(stderr).toMatch(/escape-test/);
+    expect(stderr).toMatch(/EROFS|read-only|EACCES/i);
+  }, 120_000);
+
+  it('captures workspace writes in the filesystem diff', async () => {
+    if (!dockerAvailable) {
+      return;
+    }
+
+    const workspace = await mkdtemp(path.join(tmpdir(), 'agent-runner-fs-'));
+    tempDirs.push(workspace);
+
+    const scriptPath = path.join(workspace, 'write.js');
+    await writeFile(
+      scriptPath,
+      `const fs = require('fs');\nconst path = require('path');\nfs.mkdirSync('artifacts', { recursive: true });\nfs.writeFileSync(path.join('artifacts', 'output.txt'), 'overlay capture');\n`
+    );
+
+    const baseTar = path.join(workspace, 'base.tar');
+    await exec('tar', ['-cf', baseTar, '-C', workspace, 'write.js']);
+
+    const policyPath = path.join(workspace, 'policy.yaml');
+    await writeFile(
+      policyPath,
+      `rules:\n  - host: 127.0.0.1:80\n    methods: ['GET']\n`
+    );
+
+    const recordBundle = path.join(workspace, 'write-record.tgz');
+    await exec(
+      'node',
+      [
+        cliPath,
+        'record',
+        '--image',
+        'node:20-alpine',
+        '--bundle',
+        recordBundle,
+        '--allow',
+        policyPath,
+        '--base',
+        baseTar,
+        '--seed',
+        '19',
+        'node',
+        'write.js'
+      ],
+      workspace
+    );
+
+    const bundle = await openBundleFromTar(recordBundle);
+    const fsDiffRoot = path.join(bundle.root, bundle.manifest.files.fsDiff.replace(/\/$/, ''));
+    const diffFilePath = path.join(fsDiffRoot, 'diff', 'files', 'artifacts', 'output.txt');
+    const diffContent = await readFile(diffFilePath, 'utf8');
+
+    expect(diffContent).toBe('overlay capture');
+    const deletedPath = path.join(fsDiffRoot, 'diff', 'deleted.json');
+    const deletedRaw = await readFile(deletedPath, 'utf8');
+    const deleted = JSON.parse(deletedRaw) as string[];
+    expect(deleted).toEqual([]);
+  }, 120_000);
 });
 
 async function hasDocker(): Promise<boolean> {
