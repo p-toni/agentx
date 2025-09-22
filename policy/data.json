@@ -1,0 +1,32 @@
+{
+  "config": {
+    "allow": [
+      {
+        "domains": [
+          "example.com"
+        ],
+        "methods": [
+          "POST",
+          "GET"
+        ],
+        "paths": [
+          "/api",
+          "/api/*"
+        ]
+      }
+    ],
+    "caps": {
+      "maxAmount": 1000
+    },
+    "requireApprovalLabels": [
+      "external_email",
+      "payments"
+    ],
+    "timeWindow": {
+      "end": "18:00",
+      "start": "08:00",
+      "timezone": "UTC"
+    },
+    "version": "policy-v1"
+  }
+}

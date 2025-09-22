@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
@@ -10,6 +10,7 @@ import { createBundle } from '@deterministic-agent-lab/trace';
 import { buildServer } from '../../../gate-api/src/server';
 import type { Driver, Intent } from '@deterministic-agent-lab/journal';
 import type { FastifyInstance } from 'fastify';
+import { fileURLToPath } from 'node:url';
 
 async function createTarball(sourceDir: string, targetFile: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -25,6 +26,9 @@ async function createTarball(sourceDir: string, targetFile: string): Promise<voi
   });
 }
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoPolicyDir = join(__dirname, '..', '..', '..', 'policy');
+
 test.describe('bundle approval flow', () => {
   let workspace: string;
   let gateServer: FastifyInstance;
@@ -35,25 +39,41 @@ test.describe('bundle approval flow', () => {
 
   test.beforeAll(async () => {
     workspace = await mkdtemp(join(tmpdir(), 'gate-e2e-'));
-    const policyPath = join(workspace, 'policy.yaml');
+    const policyDir = join(workspace, 'policy');
+    await mkdir(policyDir, { recursive: true });
+    await copyFile(join(repoPolicyDir, 'policy.wasm'), join(policyDir, 'policy.wasm'));
     await writeFile(
-      policyPath,
-      [
-        'version: v1',
-        'allow:',
-        '  - domain: example.com',
-        '    methods: [POST]',
-        '    paths: ["/api"]',
-        'caps:',
-        '  maxAmount: 1000',
-        'requireApprovalLabels:',
-        '  - external_email'
-      ].join('\n'),
+      join(policyDir, 'data.json'),
+      JSON.stringify(
+        {
+          config: {
+            version: 'v1',
+            allow: [
+              {
+                domains: ['example.com'],
+                methods: ['POST'],
+                paths: ['/api']
+              }
+            ],
+            caps: {
+              maxAmount: 1000
+            },
+            requireApprovalLabels: ['external_email'],
+            timeWindow: {
+              start: '00:00',
+              end: '23:59',
+              timezone: 'UTC'
+            }
+          }
+        },
+        null,
+        2
+      ),
       'utf8'
     );
 
     gateServer = buildServer({
-      policyPath,
+      policyPath: policyDir,
       dataDir: join(workspace, 'data'),
       drivers: {
         'test.mock': () => createMockDriver(driverCalls)

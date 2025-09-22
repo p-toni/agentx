@@ -43,12 +43,36 @@ export interface NetworkEntrySummary {
   readonly headers?: Record<string, string>;
 }
 
-export interface PolicyEvaluation {
+export interface PolicyBundleDecision {
   readonly allowed: boolean;
   readonly requiresApproval: boolean;
   readonly reasons: string[];
+}
+
+export interface PolicyIntentDecision {
+  readonly index: number;
+  readonly type: string;
+  readonly allowed: boolean;
+  readonly requiresApproval: boolean;
+  readonly reasons: string[];
+  readonly approvalReasons: string[];
+}
+
+export interface PolicyNetworkDecision {
+  readonly url: string;
+  readonly method: string;
+  readonly allowed: boolean;
+  readonly reasons: string[];
+}
+
+export interface PolicyEvaluation {
   readonly policyVersion: string;
-  readonly network: Array<{ url: string; method: string; allowed: boolean }>;
+  readonly allowed: boolean;
+  readonly requiresApproval: boolean;
+  readonly reasons: string[];
+  readonly bundle: PolicyBundleDecision;
+  readonly intents: PolicyIntentDecision[];
+  readonly network: PolicyNetworkDecision[];
 }
 
 export interface PromptRecord {
@@ -61,7 +85,7 @@ export interface PlanResponse {
   readonly createdAt: string;
   readonly intents: PlanIntentSummary[];
   readonly fsDiff: FileDiffSummary;
-  readonly network: PolicyEvaluation['network'];
+  readonly network: PolicyNetworkDecision[];
   readonly networkHar?: string | null;
   readonly policy: PolicyEvaluation;
   readonly approval?: ApprovalInfo | null;

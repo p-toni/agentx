@@ -6,12 +6,14 @@
   "dependencies": {
     "@deterministic-agent-lab/journal": "workspace:*",
     "@deterministic-agent-lab/trace": "workspace:*",
-    "better-sqlite3": "^9.4.1",
     "@fastify/cors": "^9.0.0",
+    "@open-policy-agent/opa-wasm": "^1.10.0",
+    "better-sqlite3": "^9.4.1",
     "fastify": "^4.25.2",
     "yaml": "^2.8.0"
   },
   "devDependencies": {
+    "@open-policy-agent/opa": "^1.7.11",
     "@types/better-sqlite3": "^7.6.8"
   },
   "scripts": {

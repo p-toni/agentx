@@ -7,7 +7,7 @@ import { Journal, type Driver, type Intent } from '@deterministic-agent-lab/jour
 import { FileWriteDriver, HttpPostDriver, LlmCallDriver } from '@deterministic-agent-lab/journal';
 import { GateStore, generateIntentId, type ApprovalRecord } from './store';
 import { loadPlanSummary, type LoadedIntent, type FileDiffSummary, type PromptRecord } from './bundle';
-import { evaluatePolicy, loadPolicy, type PolicyEvaluation } from './policy';
+import { loadPolicy, type PolicyEvaluation } from './policy';
 
 export interface GateApiOptions {
   readonly dataDir?: string;
@@ -99,7 +99,7 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     const plan = await loadPlanSummary(bundle.path);
     const intents = attachIntentIds(bundleId, plan.intents);
     const policy = await loadPolicy(policyPath);
-    const evaluation = evaluatePolicy(policy, plan.intents, plan.network);
+    const evaluation = policy.evaluate({ stage: 'plan', now: clock() }, plan.intents, plan.network);
     const approval = store.getApproval(bundleId) ?? null;
     const status = determineStatus(store, bundleId, approval);
 
@@ -162,7 +162,7 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     const plan = await loadPlanSummary(bundle.path);
     const intents = attachIntentIds(bundleId, plan.intents);
     const policy = await loadPolicy(policyPath);
-    const evaluation = evaluatePolicy(policy, plan.intents, plan.network);
+    const evaluation = policy.evaluate({ stage: 'commit', now: clock() }, plan.intents, plan.network);
 
     if (!evaluation.allowed) {
       reply.code(403);
@@ -335,7 +335,7 @@ function createDefaultDriver(type: string): Driver<unknown, unknown, unknown> | 
 }
 
 if (require.main === module) {
-  const policyPath = process.env.GATE_POLICY ?? path.join(process.cwd(), 'policy.yaml');
+  const policyPath = process.env.GATE_POLICY ?? path.join(process.cwd(), 'policy');
   const dataDir = process.env.GATE_DATA_DIR ?? path.join(process.cwd(), '.gate');
   const server = buildServer({ policyPath, dataDir });
   server.listen({ port: 3000, host: '0.0.0.0' }).catch((error) => {

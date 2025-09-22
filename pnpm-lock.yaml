@@ -56,6 +56,9 @@ importers:
       '@fastify/cors':
         specifier: ^9.0.0
         version: 9.0.1
+      '@open-policy-agent/opa-wasm':
+        specifier: ^1.10.0
+        version: 1.10.0
       better-sqlite3:
         specifier: ^9.4.1
         version: 9.6.0
@@ -66,6 +69,9 @@ importers:
         specifier: ^2.8.0
         version: 2.8.1
     devDependencies:
+      '@open-policy-agent/opa':
+        specifier: ^1.7.11
+        version: 1.7.11(zod@4.1.11)
       '@types/better-sqlite3':
         specifier: ^7.6.8
         version: 7.6.13
@@ -928,6 +934,29 @@ packages:
     engines: {node: '>=12.4.0'}
     dev: true
 
+  /@open-policy-agent/opa-wasm@1.10.0:
+    resolution: {integrity: sha512-ymR/nFS3nO9o24j9xowGGQaf+Gmb813QcxUpVZkfRlJkawKWqSIllnEH15agyWjijmOIyhA+OBErenx6N3jphw==}
+    dependencies:
+      sprintf-js: 1.1.3
+      yaml: 1.10.2
+    dev: false
+
+  /@open-policy-agent/opa@1.7.11(zod@4.1.11):
+    resolution: {integrity: sha512-CRrmLkUjTqG3Rvpr+RahWn+EBgtfaJ7uMlhDGYSjJZXEohtPIkja5Tvqgn5nmjZmuVdnC8TNyRb5Zj+g6wLhRA==}
+    peerDependencies:
+      zod: '>= 3'
+    dependencies:
+      '@open-policy-agent/ucast-prisma': 0.1.6
+      zod: 4.1.11
+    dev: true
+
+  /@open-policy-agent/ucast-prisma@0.1.6:
+    resolution: {integrity: sha512-4bnz9aZzQQyfoo6OrXCWA8IH6Kp6pB34e4A2vGv2B0S/dbfFVN8TzmUn+WTJg7Eyr/NiF2EPFShiFgBwbUhhrA==}
+    dependencies:
+      '@ucast/core': 1.10.2
+      lodash.merge: 4.6.2
+    dev: true
+
   /@pkgjs/parseargs@0.11.0:
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
@@ -1424,6 +1453,10 @@ packages:
     dependencies:
       '@typescript-eslint/types': 6.21.0
       eslint-visitor-keys: 3.4.3
+    dev: true
+
+  /@ucast/core@1.10.2:
+    resolution: {integrity: sha512-ons5CwXZ/51wrUPfoduC+cO7AS1/wRb0ybpQJ9RrssossDxVy4t49QxWoWgfBDvVKsz9VXzBk9z0wqTdZ+Cq8g==}
     dev: true
 
   /@ungap/structured-clone@1.3.0:
@@ -4739,6 +4772,10 @@ packages:
     engines: {node: '>= 10.x'}
     dev: false
 
+  /sprintf-js@1.1.3:
+    resolution: {integrity: sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA==}
+    dev: false
+
   /ssh-remote-port-forward@1.0.4:
     resolution: {integrity: sha512-x0LV1eVDwjf1gmG7TTnfqIzf+3VPRz7vrNIjX6oYLbeCrf/PeVY6hkT68Mg+q02qXxQhrLjB0jfgvhevoCRmLQ==}
     dependencies:
@@ -5573,6 +5610,11 @@ packages:
     resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
     engines: {node: '>=10'}
 
+  /yaml@1.10.2:
+    resolution: {integrity: sha512-r3vXyErRCYJ7wg28yvBY5VSoAF8ZvlcW9/BwUzEtUsjvX/DKs24dIkuwjtuprwJJHsbyUbLApepYTR1BN4uHrg==}
+    engines: {node: '>= 6'}
+    dev: false
+
   /yaml@2.8.1:
     resolution: {integrity: sha512-lcYcMxX2PO9XMGvAJkJ3OsNMw+/7FKes7/hgerGUYWIoWu5j/+YQqcZr5JnPZWzOsEBgMbSbiSTn/dv/69Mkpw==}
     engines: {node: '>= 14.6'}
@@ -5625,4 +5667,8 @@ packages:
       archiver-utils: 5.0.2
       compress-commons: 6.0.2
       readable-stream: 4.7.0
+    dev: true
+
+  /zod@4.1.11:
+    resolution: {integrity: sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg==}
     dev: true

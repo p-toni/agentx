@@ -19,6 +19,7 @@ export function NetworkViewer({ entries, har }: NetworkViewerProps) {
               <th>Method</th>
               <th>URL</th>
               <th>Allowed</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>
@@ -27,6 +28,17 @@ export function NetworkViewer({ entries, har }: NetworkViewerProps) {
                 <td>{entry.method}</td>
                 <td>{entry.url}</td>
                 <td>{entry.allowed ? 'allowed' : 'blocked'}</td>
+                <td>
+                  {entry.reasons.length > 0 ? (
+                    <ul>
+                      {entry.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    '—'
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -35,6 +35,16 @@ export default function BundleDetailPage() {
   const { data, error, isLoading, mutate } = useSWR<PlanResponse>(user ? ['plan', bundleId] : null, () => fetcher(bundleId));
   const [busy, setBusy] = useState(false);
 
+  const intentPolicyMap = useMemo(() => {
+    const map = new Map<number, PlanResponse['policy']['intents'][number]>();
+    if (data) {
+      for (const decision of data.policy.intents) {
+        map.set(decision.index, decision);
+      }
+    }
+    return map;
+  }, [data]);
+
   const policyState = useMemo(() => {
     if (!data) {
       return { canCommit: false, needsApproval: false };
@@ -188,16 +198,53 @@ export default function BundleDetailPage() {
                 <th>ID</th>
                 <th>Type</th>
                 <th>Timestamp</th>
+                <th>Policy</th>
+                <th>Approval</th>
               </tr>
             </thead>
             <tbody>
-              {data.intents.map((intent) => (
-                <tr key={intent.id}>
-                  <td>{intent.id}</td>
-                  <td>{intent.type}</td>
-                  <td>{intent.timestamp ? new Date(intent.timestamp).toLocaleString() : '—'}</td>
-                </tr>
-              ))}
+              {data.intents.map((intent, index) => {
+                const decision = intentPolicyMap.get(index);
+                return (
+                  <tr key={intent.id}>
+                    <td>{intent.id}</td>
+                    <td>{intent.type}</td>
+                    <td>{intent.timestamp ? new Date(intent.timestamp).toLocaleString() : '—'}</td>
+                    <td>
+                      {decision ? (
+                        <div>
+                          <strong>{decision.allowed ? 'allowed' : 'blocked'}</strong>
+                          {decision.reasons.length > 0 && (
+                            <ul>
+                              {decision.reasons.map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td>
+                      {decision ? (
+                        <div>
+                          <strong>{decision.requiresApproval ? 'required' : 'not required'}</strong>
+                          {decision.approvalReasons.length > 0 && (
+                            <ul>
+                              {decision.approvalReasons.map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

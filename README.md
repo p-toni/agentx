@@ -11,6 +11,7 @@ A pnpm + TypeScript monorepo for building deterministic agent tooling, including
 - `apps/runner` — CLI entrypoint to run an agent inside a controlled container.
 - `apps/gate-api` — Fastify API surface for plan/approve/commit/revert flows.
 - `apps/gate-ui` — Next.js interface for reviewing diffs and approvals.
+- `policy/` — Rego sources, Wasm bundle, and unit tests for gate policy enforcement.
 - `examples/agents/echo` — toy agent used for end-to-end tests.
 
 ## Getting started

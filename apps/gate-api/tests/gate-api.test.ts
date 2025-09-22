@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createBundle } from '@deterministic-agent-lab/trace';
 import { buildServer, type DriverFactory } from '../src/server';
 import type { Driver, Intent } from '@deterministic-agent-lab/journal';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoPolicyDir = join(__dirname, '..', '..', '..', 'policy');
 
 const cleanup: string[] = [];
 
@@ -26,20 +30,31 @@ describe('transaction gate API', () => {
     const workspace = await mkdtemp(join(tmpdir(), 'gate-api-'));
     cleanup.push(workspace);
 
-    const policyPath = join(workspace, 'policy.yaml');
+    const policyDir = join(workspace, 'policy');
+    await mkdir(policyDir, { recursive: true });
+    await copyFile(join(repoPolicyDir, 'policy.wasm'), join(policyDir, 'policy.wasm'));
     await writeFile(
-      policyPath,
-      [
-        'version: v1',
-        'allow:',
-        '  - domain: example.com',
-        '    methods: [POST]',
-        '    paths: ["/api"]',
-        'caps:',
-        '  maxAmount: 1000',
-        'requireApprovalLabels:',
-        '  - external_email'
-      ].join('\n'),
+      join(policyDir, 'data.json'),
+      JSON.stringify(
+        {
+          config: {
+            version: 'v1',
+            allow: [
+              {
+                domains: ['example.com'],
+                methods: ['POST'],
+                paths: ['/api']
+              }
+            ],
+            caps: {
+              maxAmount: 1000
+            },
+            requireApprovalLabels: ['external_email']
+          }
+        },
+        null,
+        2
+      ),
       'utf8'
     );
 
@@ -81,7 +96,7 @@ describe('transaction gate API', () => {
 
     const server = buildServer({
       dataDir: workspace,
-      policyPath,
+      policyPath: policyDir,
       drivers: {
         'test.mock': driverFactory
       }
@@ -108,6 +123,11 @@ describe('transaction gate API', () => {
     expect(planResponse.statusCode).toBe(200);
     const plan = planResponse.json() as any;
     expect(plan.policy.requiresApproval).toBe(true);
+    expect(plan.policy.bundle.allowed).toBe(true);
+    expect(plan.policy.intents[0]?.approvalReasons ?? []).toContain(
+      'intent test.mock label external_email requires approval'
+    );
+    expect(plan.policy.network[0]?.allowed).toBe(true);
     expect(plan.intents).toHaveLength(1);
     expect(plan.fsDiff.changed).toBeInstanceOf(Array);
     expect(plan.status).toBe('pending');
