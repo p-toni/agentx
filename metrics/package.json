@@ -1,0 +1,26 @@
+{
+  "name": "@deterministic-agent-lab/metrics",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "metrics": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@deterministic-agent-lab/replay": "workspace:*",
+    "@deterministic-agent-lab/runner": "workspace:*",
+    "@deterministic-agent-lab/trace": "workspace:*",
+    "commander": "^11.1.0",
+    "execa": "^8.0.1",
+    "fs-extra": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "vitest": "^0.34.6",
+    "typescript": "^5.3.3"
+  }
+}

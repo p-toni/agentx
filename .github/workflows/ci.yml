@@ -41,3 +41,15 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Build metrics toolkit
+        run: pnpm --filter @deterministic-agent-lab/metrics build
+
+      - name: Collect reproducibility metrics
+        run: pnpm --filter @deterministic-agent-lab/metrics exec node dist/index.js replay --iterations 50 --output metrics/reports/replay-metrics.md
+
+      - name: Publish reproducibility report
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-metrics
+          path: metrics/reports/replay-metrics.md

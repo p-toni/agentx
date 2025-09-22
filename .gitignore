@@ -5,3 +5,4 @@ dist
 .next
 coverage
 .env*
+metrics/reports/

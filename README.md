@@ -8,6 +8,7 @@ A pnpm + TypeScript monorepo for building deterministic agent tooling, including
 - `packages/proxy` — HTTP(S) allowlist proxy with record/replay hooks.
 - `packages/trace` — trace bundle format definitions with readers/writers.
 - `packages/replay` — deterministic replay utilities (includes `replay verify` CLI plus Node/Python helpers for virtual clocks).
+- `metrics/` — reproducibility metrics harness and reporting CLI.
 - `apps/runner` — CLI entrypoint to run an agent inside a controlled container.
 - `apps/gate-api` — Fastify API surface for plan/approve/commit/revert flows.
 - `apps/gate-ui` — Next.js interface for reviewing diffs and approvals.
@@ -50,6 +51,9 @@ A pnpm + TypeScript monorepo for building deterministic agent tooling, including
 - Vitest for unit and integration tests.
 - Turborepo orchestrates build/lint/test/dev pipelines with caching.
 - Devcontainer preconfigures Ubuntu, Node 20, Docker-in-Docker, and pnpm.
+
+See [`docs/reproducibility.md`](docs/reproducibility.md) for a deeper look at the deterministic
+architecture and how replay guarantees are measured in CI.
 
 ### Deterministic runner
 
