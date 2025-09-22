@@ -11,6 +11,7 @@ import { openBundle, type TraceBundle } from '@deterministic-agent-lab/trace';
 import { verifyBundle, type ReplayVerificationResult } from '@deterministic-agent-lab/replay';
 
 const { mkdtemp, writeFile, rm, readdir, stat } = fsPromises;
+const ROOT = path.resolve(__dirname, '..', '..');
 
 interface RunMetrics {
   seed: number;
@@ -21,9 +22,9 @@ interface RunMetrics {
 }
 
 const DEFAULT_ITERATIONS = 50;
-const REPORT_DIR = path.resolve(process.cwd(), 'metrics', 'reports');
+const REPORT_DIR = path.join(ROOT, 'metrics', 'reports');
 const REPORT_DEFAULT = path.join(REPORT_DIR, 'replay-metrics.md');
-const RUNNER_CLI = path.resolve(process.cwd(), 'apps/runner/dist/agent-run.js');
+const RUNNER_CLI = path.join(ROOT, 'apps', 'runner', 'dist', 'agent-run.js');
 
 const program = new Command();
 
@@ -39,7 +40,7 @@ program
   .option('--image <image>', 'Container image for the agent run', 'node:20-alpine')
   .action(async (options) => {
     const iterations = Math.max(1, Number.parseInt(options.iterations ?? String(DEFAULT_ITERATIONS), 10));
-    const outputPath = path.resolve(options.output ?? REPORT_DEFAULT);
+    const outputPath = path.resolve(ROOT, options.output ?? REPORT_DEFAULT);
     const image = String(options.image ?? 'node:20-alpine');
 
     await fs.ensureDir(path.dirname(outputPath));
@@ -47,6 +48,11 @@ program
     const runnerExists = await fileExists(RUNNER_CLI);
     if (!runnerExists) {
       console.error('apps/runner/dist/agent-run.js not found. Please run "pnpm build" first.');
+      process.exit(1);
+    }
+
+    if (!(await hasDocker())) {
+      console.error('Docker is required to collect reproducibility metrics.');
       process.exit(1);
     }
 
@@ -240,6 +246,15 @@ function escapePipes(value: string): string {
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasDocker(): Promise<boolean> {
+  try {
+    await execa('docker', ['version'], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
