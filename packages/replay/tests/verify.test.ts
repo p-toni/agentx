@@ -224,35 +224,6 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 function resolvePnpmCommand(): { command: string; args: string[] } | undefined {
-  const npmExecPath = process.env.npm_execpath;
-  if (npmExecPath) {
-    const nodeCandidates = new Set<string>();
-    if (process.execPath) {
-      nodeCandidates.add(process.execPath);
-    }
-    nodeCandidates.add('node');
-    const whichNode = spawnSync('which', ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    if (whichNode.status === 0) {
-      const resolved = (whichNode.stdout ?? '').trim();
-      if (resolved.length > 0) {
-        nodeCandidates.add(resolved);
-      }
-    }
-    for (const candidate of nodeCandidates) {
-      if (!candidate) {
-        continue;
-      }
-      try {
-        const check = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
-        if (check.status === 0) {
-          return { command: candidate, args: [npmExecPath] };
-        }
-      } catch {
-        // ignore and try next candidate
-      }
-    }
-  }
-
   const pnpmHome = process.env.PNPM_HOME;
   if (pnpmHome) {
     const candidate = path.join(pnpmHome, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
@@ -273,6 +244,37 @@ function resolvePnpmCommand(): { command: string; args: string[] } | undefined {
         if (check.status === 0) {
           return { command: candidate, args: [] };
         }
+      }
+    }
+  }
+
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath) {
+    const nodeCandidates = new Set<string>();
+    if (process.execPath) {
+      nodeCandidates.add(process.execPath);
+    }
+    const whichNode = spawnSync('which', ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    if (whichNode.status === 0) {
+      const resolved = (whichNode.stdout ?? '').trim();
+      if (resolved.length > 0) {
+        nodeCandidates.add(resolved);
+      }
+    }
+
+    nodeCandidates.add('node');
+
+    for (const candidate of nodeCandidates) {
+      if (!candidate) {
+        continue;
+      }
+      try {
+        const check = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
+        if (check.status === 0) {
+          return { command: candidate, args: [npmExecPath] };
+        }
+      } catch {
+        // ignore and try next candidate
       }
     }
   }
