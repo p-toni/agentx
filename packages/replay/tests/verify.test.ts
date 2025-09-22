@@ -3,8 +3,7 @@ import fc from 'fast-check';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { verifyBundle } from '../src';
 import { hashBundle, openBundle } from '@deterministic-agent-lab/trace';
 
@@ -12,24 +11,20 @@ const tempDirs: string[] = [];
 let dockerAvailable = false;
 let runnerCliPath: string;
 let replayCliPath: string;
-let pnpmCommand: { command: string; args: string[] } | undefined;
 
 beforeAll(async () => {
   dockerAvailable = await hasDocker();
   runnerCliPath = path.resolve(__dirname, '../../runner/dist/agent-run.js');
   replayCliPath = path.resolve(__dirname, '../dist/cli.js');
-  pnpmCommand = resolvePnpmCommand();
 
-  if (!dockerAvailable || !pnpmCommand) {
+  if (!dockerAvailable) {
     dockerAvailable = false;
     return;
   }
 
-  if (!(await fileExists(runnerCliPath))) {
-    await exec('pnpm', ['--filter', '@deterministic-agent-lab/runner', 'build'], path.resolve(__dirname, '../../runner'));
-  }
-  if (!(await fileExists(replayCliPath))) {
-    await exec('pnpm', ['--filter', '@deterministic-agent-lab/replay', 'build'], path.resolve(__dirname, '..'));
+  const [runnerExists, replayExists] = await Promise.all([fileExists(runnerCliPath), fileExists(replayCliPath)]);
+  if (!runnerExists || !replayExists) {
+    dockerAvailable = false;
   }
 });
 
@@ -190,25 +185,14 @@ async function hasDocker(): Promise<boolean> {
 }
 
 async function exec(command: string, args: string[], cwd?: string): Promise<void> {
-  let resolvedCommand = command;
-  let resolvedArgs = args;
-  if (command === 'pnpm') {
-    const pnpm = pnpmCommand ?? resolvePnpmCommand();
-    if (!pnpm) {
-      throw new Error('pnpm executable not found in environment');
-    }
-    resolvedCommand = pnpm.command;
-    resolvedArgs = [...pnpm.args, ...args];
-  }
-
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(resolvedCommand, resolvedArgs, { cwd, stdio: 'inherit' });
+    const child = spawn(command, args, { cwd, stdio: 'inherit' });
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`${resolvedCommand} ${resolvedArgs.join(' ')} exited with code ${code ?? 0}`));
+        reject(new Error(`${command} ${args.join(' ')} exited with code ${code ?? 0}`));
       }
     });
   });
@@ -221,61 +205,4 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function resolvePnpmCommand(): { command: string; args: string[] } | undefined {
-  const npmExecPath = process.env.npm_execpath;
-  if (npmExecPath) {
-    const nodeCandidates = new Set<string>();
-    if (process.execPath) {
-      nodeCandidates.add(process.execPath);
-    }
-    nodeCandidates.add('node');
-    const whichNode = spawnSync('which', ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    if (whichNode.status === 0) {
-      const resolved = (whichNode.stdout ?? '').trim();
-      if (resolved.length > 0) {
-        nodeCandidates.add(resolved);
-      }
-    }
-    for (const candidate of nodeCandidates) {
-      if (!candidate) {
-        continue;
-      }
-      try {
-        const check = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
-        if (check.status === 0) {
-          return { command: candidate, args: [npmExecPath] };
-        }
-      } catch {
-        // ignore and try next candidate
-      }
-    }
-  }
-
-  const pnpmHome = process.env.PNPM_HOME;
-  if (pnpmHome) {
-    const candidate = path.join(pnpmHome, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
-    if (existsSync(candidate)) {
-      const check = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
-      if (check.status === 0) {
-        return { command: candidate, args: [] };
-      }
-    }
-  }
-
-  if (process.platform !== 'win32') {
-    const result = spawnSync('which', ['pnpm'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    if (result.status === 0) {
-      const candidate = (result.stdout ?? '').trim();
-      if (candidate.length > 0 && existsSync(candidate)) {
-        const check = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
-        if (check.status === 0) {
-          return { command: candidate, args: [] };
-        }
-      }
-    }
-  }
-
-  return undefined;
 }
