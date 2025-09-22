@@ -42,3 +42,25 @@ re-running the echo agent under random seeds.  For each execution we:
 
 A Markdown report summarises aggregate statistics and per-run outcomes.  This report is
 archived on every CI run so regressions become visible immediately.
+
+## Concurrency
+
+By default the runner enables deterministic scheduling (`--deterministic`). Each
+container is pinned to a single logical CPU (`--cpus=1` and `--cpuset-cpus=0`) and we
+export guard rails per runtime:
+
+- `UV_THREADPOOL_SIZE=1` and `NODE_OPTIONS=--no-experimental-require-module` for Node;
+- `GOMAXPROCS=1` for Go; `-XX:ActiveProcessorCount=1` for Java;
+- `PYTHONHASHSEED=0` for Python.
+
+Every execution also receives `AGENT_CLOCK_FILE`, `AGENT_EXECUTION_MODE`, and
+`AGENT_DETERMINISTIC=1`. Agents can opt in to fully deterministic timers/RNG by loading
+the lightweight shims:
+
+- Node: `node -r @deterministic-agent-lab/runtime-node/register app.js`
+- Python: `python -m dal_runtime app.py`
+
+These preloads install a virtual clock, seeded PRNG, and deterministic timer scheduler.
+During recording they emit `clock.json` ticks (per runtime source) which are replayed to
+enforce identical event ordering. The runner persists those ticks in the trace bundle so
+replays can verify byte-for-byte output stability.

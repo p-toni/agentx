@@ -79,9 +79,25 @@ node apps/runner/dist/agent-run.js replay \
   --output /tmp/echo-replay.tgz
 ```
 
-Node agents can import `apps/runner/src/fake-clock` and call
-`installFakeClock()` on bootstrap to ensure `Date.now()` and zero-argument
-`new Date()` are derived from `AGENT_START_TIME` instead of wall-clock time.
+Agent executions run in deterministic mode by default (disable with
+`--deterministic false`). The runner pins the container to a single vCPU,
+exports seeded clock/RNG environment variables, and captures virtual clock ticks
+for replay verification.
+
+Node agents can preload deterministic timers via:
+
+```
+node -r @deterministic-agent-lab/runtime-node/register app.js
+```
+
+Python agents can install the same shims with:
+
+```
+python -m dal_runtime app.py
+```
+
+Both runtimes replace `Date.now()`/`datetime.now()` and seeded randomness so
+replays observe a stable event ordering, even when timers or intervals overlap.
 
 ## Continuous Integration
 

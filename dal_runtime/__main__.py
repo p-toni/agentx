@@ -1,0 +1,3 @@
+from . import install
+
+install()

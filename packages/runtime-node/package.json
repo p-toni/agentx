@@ -1,0 +1,20 @@
+{
+  "name": "@deterministic-agent-lab/runtime-node",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./register": "./dist/register.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {},
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
+  }
+}

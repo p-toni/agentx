@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { spawn, SpawnOptions, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -7,23 +7,44 @@ import os from 'node:os';
 import path from 'node:path';
 import { openBundle, createBundle, hashBundle } from '@deterministic-agent-lab/trace';
 
+type ClockSnapshot = Record<string, unknown>;
+
 interface RecordOptions {
   image: string;
   bundle: string;
   allow: string;
   base?: string;
   seed?: number;
+  deterministic?: boolean;
 }
 
 interface ReplayOptions {
   bundle: string;
   output: string;
+  deterministic?: boolean;
 }
 
 interface DockerResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+interface DockerRunResult extends DockerResult {
+  clock?: ClockSnapshot;
+}
+
+interface RunDockerOptions {
+  image: string;
+  command: string[];
+  workdir: string;
+  seed: number;
+  startTime: string;
+  proxyPort: number;
+  caCertPath: string;
+  mode: 'record' | 'replay';
+  deterministic: boolean;
+  clockData?: ClockSnapshot;
 }
 
 interface ProxyHandle {
@@ -38,6 +59,28 @@ program
   .name('agent-run')
   .description('Deterministic agent runner with recording and replay capabilities');
 
+function parseDeterministicFlag(value?: string): boolean {
+  if (!value) {
+    return true;
+  }
+
+  const normalised = value.trim().toLowerCase();
+  if (normalised === '' || normalised === 'true' || normalised === '1' || normalised === 'yes' || normalised === 'on') {
+    return true;
+  }
+
+  if (normalised === 'false' || normalised === '0' || normalised === 'no' || normalised === 'off') {
+    return false;
+  }
+
+  throw new Error(`Invalid value for --deterministic: ${value}`);
+}
+
+function createDeterministicOption(): Option {
+  return new Option('--deterministic [mode]', 'Enable deterministic scheduling for the container (default: on)')
+    .argParser(parseDeterministicFlag);
+}
+
 program
   .command('record')
   .description('Record an agent execution into a trace bundle')
@@ -46,10 +89,12 @@ program
   .requiredOption('--allow <file>', 'Proxy allowlist policy YAML')
   .option('--base <tar>', 'Optional base tarball for workspace lower layer')
   .option('--seed <number>', 'Seed value for deterministic RNG', (value) => Number.parseInt(value, 10))
+  .addOption(createDeterministicOption())
   .argument('<cmd...>', 'Command to execute inside the container')
   .action(async (cmd: string[], options: RecordOptions) => {
     const seed = Number.isFinite(options.seed) ? Number(options.seed) : randomInt(0, Number.MAX_SAFE_INTEGER);
     const startTime = new Date().toISOString();
+    const deterministic = options.deterministic ?? true;
 
     const workspace = await createWorkspace(options.base);
     const proxyArtifacts = await createProxyArtifacts();
@@ -60,7 +105,7 @@ program
       caPath: proxyArtifacts.caPath
     });
 
-    let dockerResult: DockerResult | undefined;
+    let dockerResult: DockerRunResult | undefined;
 
     try {
       dockerResult = await runDocker({
@@ -70,7 +115,9 @@ program
         seed,
         startTime,
         proxyPort: proxyHandle.port,
-        caCertPath: proxyArtifacts.caPath
+        caCertPath: proxyArtifacts.caPath,
+        mode: 'record',
+        deterministic
       });
     } finally {
       await proxyHandle.stop();
@@ -94,6 +141,7 @@ program
     const bundleRoot = await mkdtemp(path.join(os.tmpdir(), 'agent-bundle-'));
     const networkHar = await readFile(proxyArtifacts.harPath, 'utf8');
     const caContents = await readFile(proxyArtifacts.caPath);
+    const clockData = normaliseClockSnapshot(dockerResult.clock, startTime);
     await createBundle(bundleRoot, {
       createdAt: new Date().toISOString(),
       metadata: {
@@ -101,18 +149,17 @@ program
         image: options.image,
         command: cmd,
         seed,
-        startTime
+        startTime,
+        deterministic
       },
       env: {
         seed,
         startTime,
         image: options.image,
-        command: cmd
+        command: cmd,
+        deterministic
       },
-      clock: {
-        initialTime: startTime,
-        ticks: []
-      },
+      clock: clockData,
       network: networkHar,
       logs: {
         'stdout.log': dockerResult.stdout,
@@ -139,6 +186,7 @@ program
   .description('Replay an agent run from a trace bundle')
   .requiredOption('--bundle <file>', 'Input bundle (.tgz) path')
   .requiredOption('--output <file>', 'Output bundle (.tgz) path for the replay run')
+  .addOption(createDeterministicOption())
   .action(async (options: ReplayOptions) => {
     const extracted = await extractBundle(path.resolve(options.bundle));
     const bundle = await openBundle(extracted.root);
@@ -150,11 +198,18 @@ program
       startTime: string;
       image: string;
       command: string[];
+      deterministic?: boolean;
     };
+    const deterministic = options.deterministic ?? (envData.deterministic ?? true);
     const proxyArtifacts = await createProxyArtifacts();
     const harPath = path.join(extracted.root, manifest.files.network);
     const policyPath = await materialiseLog(extracted.root, manifest.files.logs, 'policy.yaml');
     const caPath = await materialisePrompt(extracted.root, manifest.files.prompts, 'proxy-ca.pem');
+    const clockPath = path.join(extracted.root, manifest.files.clock);
+    const recordedClock = normaliseClockSnapshot(
+      JSON.parse(await readFile(clockPath, 'utf8')) as ClockSnapshot,
+      envData.startTime
+    );
 
     const proxyHandle = await startProxy({
       mode: 'replay',
@@ -163,7 +218,7 @@ program
       caPath: proxyArtifacts.caPath
     });
 
-    let dockerResult: DockerResult | undefined;
+    let dockerResult: DockerRunResult | undefined;
     const workspace = await recreateWorkspace(extracted.root, manifest.files.fsDiff);
 
     try {
@@ -174,7 +229,10 @@ program
         seed: envData.seed,
         startTime: envData.startTime,
         proxyPort: proxyHandle.port,
-        caCertPath: proxyArtifacts.caPath
+        caCertPath: proxyArtifacts.caPath,
+        mode: 'replay',
+        deterministic,
+        clockData: recordedClock
       });
     } finally {
       await proxyHandle.stop();
@@ -195,6 +253,7 @@ program
     }
 
     const bundleRoot = await mkdtemp(path.join(os.tmpdir(), 'agent-replay-bundle-'));
+    const clockData = normaliseClockSnapshot(dockerResult.clock ?? recordedClock, envData.startTime);
     await createBundle(bundleRoot, {
       createdAt: manifest.createdAt ?? new Date().toISOString(),
       metadata: {
@@ -203,10 +262,11 @@ program
         image: envData.image,
         command: envData.command,
         seed: envData.seed,
-        startTime: envData.startTime
+        startTime: envData.startTime,
+        deterministic
       },
-      env: envData,
-      clock: JSON.parse(await readFile(path.join(extracted.root, manifest.files.clock), 'utf8')),
+      env: { ...envData, deterministic },
+      clock: clockData,
       network: await readFile(harPath, 'utf8'),
       logs: {
         'stdout.log': dockerResult.stdout,
@@ -311,31 +371,42 @@ async function startProxy(options: {
   };
 }
 
-async function runDocker(options: {
-  image: string;
-  command: string[];
-  workdir: string;
-  seed: number;
-  startTime: string;
-  proxyPort: number;
-  caCertPath: string;
-}): Promise<DockerResult> {
+async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
   const proxyUrl = `http://127.0.0.1:${options.proxyPort}`;
-  const args = [
-    'run',
-    '--rm',
-    '--network=host',
-    '-e', `AGENT_SEED=${options.seed}`,
-    '-e', `AGENT_START_TIME=${options.startTime}`,
-    '-e', `HTTP_PROXY=${proxyUrl}`,
-    '-e', `HTTPS_PROXY=${proxyUrl}`,
-    '-e', `ALL_PROXY=${proxyUrl}`,
-    '-e', `NODE_EXTRA_CA_CERTS=/workspace/.agent/ca.pem`,
-    '-e', `REQUESTS_CA_BUNDLE=/workspace/.agent/ca.pem`,
-    '-e', `CURL_CA_BUNDLE=/workspace/.agent/ca.pem`,
-    '-v', `${options.workdir}:/workspace`,
-    '-w', '/workspace'
-  ];
+  const envVars = new Map<string, string>([
+    ['AGENT_SEED', String(options.seed)],
+    ['AGENT_START_TIME', options.startTime],
+    ['HTTP_PROXY', proxyUrl],
+    ['HTTPS_PROXY', proxyUrl],
+    ['ALL_PROXY', proxyUrl],
+    ['NODE_EXTRA_CA_CERTS', '/workspace/.agent/ca.pem'],
+    ['REQUESTS_CA_BUNDLE', '/workspace/.agent/ca.pem'],
+    ['CURL_CA_BUNDLE', '/workspace/.agent/ca.pem'],
+    ['AGENT_EXECUTION_MODE', options.mode],
+    ['AGENT_CLOCK_FILE', '/workspace/.agent/clock.json']
+  ]);
+
+  if (options.deterministic) {
+    envVars.set('AGENT_DETERMINISTIC', '1');
+    envVars.set('UV_THREADPOOL_SIZE', '1');
+    envVars.set('NODE_OPTIONS', mergeEnvValue(process.env.NODE_OPTIONS, '--no-experimental-require-module'));
+    envVars.set('GOMAXPROCS', '1');
+    envVars.set('JAVA_TOOL_OPTIONS', mergeEnvValue(process.env.JAVA_TOOL_OPTIONS, '-XX:ActiveProcessorCount=1'));
+    envVars.set('PYTHONHASHSEED', '0');
+    envVars.set('AGENT_CLOCK_MODE', 'deterministic');
+  }
+
+  const args = ['run', '--rm', '--network=host'];
+
+  if (options.deterministic) {
+    args.push('--cpus=1', '--cpu-shares=1024', '--cpuset-cpus=0');
+  }
+
+  for (const [key, value] of envVars) {
+    args.push('-e', `${key}=${value}`);
+  }
+
+  args.push('-v', `${options.workdir}:/workspace`, '-w', '/workspace');
 
   const commandArgs = [...args, options.image, ...options.command];
 
@@ -343,7 +414,28 @@ async function runDocker(options: {
   await fs.mkdir(agentDir, { recursive: true });
   await fs.copyFile(options.caCertPath, path.join(agentDir, 'ca.pem'));
 
-  return await spawnAndCapture('docker', commandArgs, { env: process.env });
+  const clockFileHost = path.join(agentDir, 'clock.json');
+  await rm(clockFileHost, { force: true });
+
+  if (options.mode === 'replay' && options.clockData) {
+    await fs.writeFile(clockFileHost, `${JSON.stringify(options.clockData, null, 2)}\n`, 'utf8');
+  }
+
+  const result = await spawnAndCapture('docker', commandArgs, { env: process.env });
+
+  let clock: ClockSnapshot | undefined;
+  try {
+    const raw = await fs.readFile(clockFileHost, 'utf8');
+    clock = JSON.parse(raw) as ClockSnapshot;
+  } catch (error) {
+    if (options.mode === 'record') {
+      clock = normaliseClockSnapshot(undefined, options.startTime);
+    } else {
+      clock = normaliseClockSnapshot(options.clockData, options.startTime);
+    }
+  }
+
+  return { ...result, clock: normaliseClockSnapshot(clock, options.startTime) };
 }
 
 async function spawnAndCapture(command: string, args: string[], options?: SpawnOptions): Promise<DockerResult> {
@@ -379,6 +471,36 @@ async function spawnAndCapture(command: string, args: string[], options?: SpawnO
       }
     });
   });
+}
+
+function mergeEnvValue(existing: string | undefined, value: string): string {
+  if (!existing || existing.trim().length === 0) {
+    return value;
+  }
+
+  if (existing.includes(value)) {
+    return existing;
+  }
+
+  return `${existing} ${value}`.trim();
+}
+
+function normaliseClockSnapshot(clock: ClockSnapshot | undefined, initialTime: string): ClockSnapshot {
+  const base = typeof clock === 'object' && clock !== null ? { ...clock } : {};
+
+  if (!('initialTime' in base)) {
+    (base as Record<string, unknown>).initialTime = initialTime;
+  }
+
+  if (!('version' in base)) {
+    (base as Record<string, unknown>).version = 1;
+  }
+
+  if (!('sources' in base) || typeof (base as Record<string, unknown>).sources !== 'object') {
+    (base as Record<string, unknown>).sources = {};
+  }
+
+  return base as ClockSnapshot;
 }
 
 async function createWorkspace(baseTar?: string) {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -25,8 +25,13 @@ describe('agent-run CLI', () => {
 
   beforeAll(async () => {
     cliPath = path.resolve(__dirname, '../dist/agent-run.js');
+    const repoRoot = path.resolve(__dirname, '../../..');
     if (!(await fileExists(cliPath))) {
-      await exec('pnpm', ['--filter', '@deterministic-agent-lab/runner', 'build'], path.resolve(__dirname, '..'));
+      await exec('pnpm', ['--filter', '@deterministic-agent-lab/runner', 'build'], repoRoot);
+    }
+    const runtimeDist = path.resolve(repoRoot, 'packages/runtime-node/dist/index.js');
+    if (!(await fileExists(runtimeDist))) {
+      await exec('pnpm', ['--filter', '@deterministic-agent-lab/runtime-node', 'build'], repoRoot);
     }
     dockerAvailable = await hasDocker();
   });
@@ -76,6 +81,69 @@ describe('agent-run CLI', () => {
 
     expect(hashA).toBe(hashB);
   }, 120_000);
+
+  it('replays timer-heavy agents with identical output', async () => {
+    if (!dockerAvailable) {
+      return;
+    }
+
+    const repoRoot = path.resolve(__dirname, '../../..');
+    const workspace = await mkdtemp(path.join(tmpdir(), 'agent-runner-timer-'));
+    tempDirs.push(workspace);
+
+    const scriptSource = path.join(repoRoot, 'examples/agents/timer/timers.js');
+    const scriptPath = path.join(workspace, 'timers.js');
+    await cp(scriptSource, scriptPath);
+
+    const runtimeSource = path.join(repoRoot, 'packages/runtime-node');
+    const runtimeDest = path.join(workspace, 'node_modules', '@deterministic-agent-lab', 'runtime-node');
+    await mkdir(runtimeDest, { recursive: true });
+    await cp(path.join(runtimeSource, 'package.json'), path.join(runtimeDest, 'package.json'));
+    await cp(path.join(runtimeSource, 'dist'), path.join(runtimeDest, 'dist'), { recursive: true });
+
+    const baseTar = path.join(workspace, 'base.tar');
+    await exec('tar', ['-cf', baseTar, '-C', workspace, 'timers.js', 'node_modules']);
+
+    const policyPath = path.join(workspace, 'policy.yaml');
+    await writeFile(
+      policyPath,
+      `rules:\n  - host: 127.0.0.1:80\n    methods: ['GET']\n`
+    );
+
+    const recordBundle = path.join(workspace, 'timers-record.tgz');
+    await exec(
+      'node',
+      [
+        cliPath,
+        'record',
+        '--image',
+        'node:20-alpine',
+        '--bundle',
+        recordBundle,
+        '--allow',
+        policyPath,
+        '--base',
+        baseTar,
+        '--seed',
+        '73',
+        'node',
+        '-r',
+        '@deterministic-agent-lab/runtime-node/register',
+        'timers.js'
+      ],
+      workspace
+    );
+
+    const replayBundleA = path.join(workspace, 'timers-replay-a.tgz');
+    const replayBundleB = path.join(workspace, 'timers-replay-b.tgz');
+    await exec('node', [cliPath, 'replay', '--bundle', recordBundle, '--output', replayBundleA]);
+    await exec('node', [cliPath, 'replay', '--bundle', recordBundle, '--output', replayBundleB]);
+
+    const hashA = await hashBundle(await openBundleFromTar(replayBundleA));
+    const hashB = await hashBundle(await openBundleFromTar(replayBundleB));
+
+    expect(hashA).toBe(hashB);
+  }, 180_000);
 });
 
 async function hasDocker(): Promise<boolean> {
