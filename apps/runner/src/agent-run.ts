@@ -90,6 +90,7 @@ program
   .option('--base <tar>', 'Optional base tarball for workspace lower layer')
   .option('--seed <number>', 'Seed value for deterministic RNG', (value) => Number.parseInt(value, 10))
   .addOption(createDeterministicOption())
+  .allowUnknownOption(true)
   .argument('<cmd...>', 'Command to execute inside the container')
   .action(async (cmd: string[], options: RecordOptions) => {
     const seed = Number.isFinite(options.seed) ? Number(options.seed) : randomInt(0, Number.MAX_SAFE_INTEGER);
