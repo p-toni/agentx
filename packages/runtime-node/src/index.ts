@@ -195,6 +195,22 @@ function registerPersist(
   mode: ExecutionMode,
   scheduler: DeterministicScheduler
 ): void {
+  if (mode === 'replay') {
+    const ensureComplete = () => {
+      scheduler.verifyReplayComplete();
+    };
+    process.once('exit', ensureComplete);
+    process.once('SIGINT', () => {
+      ensureComplete();
+      process.exit(130);
+    });
+    process.once('SIGTERM', () => {
+      ensureComplete();
+      process.exit(143);
+    });
+    return;
+  }
+
   let persisted = false;
   const writeClock = () => {
     if (persisted) {
@@ -412,6 +428,19 @@ class DeterministicScheduler {
 
   getTicks(): NodeClockTick[] {
     return this.producedTicks.map((tick) => ({ ...tick }));
+  }
+
+  verifyReplayComplete(): void {
+    if (!this.recordedTicks) {
+      return;
+    }
+
+    const remaining = this.recordedTicks.length - this.recordedIndex;
+    if (remaining !== 0) {
+      process.stderr.write(
+        `[dal-runtime-node] replay did not consume ${remaining} recorded timer ticks\n`
+      );
+    }
   }
 
   setTimer(

@@ -177,6 +177,10 @@ def _advance(seconds: float) -> None:
 
 
 def _register_persist() -> None:
+    if _MODE == "replay":
+        atexit.register(_verify_replay_consumed)
+        return
+
     atexit.register(_persist_clock)
 
 
@@ -264,6 +268,17 @@ def _write_stderr(message: str) -> None:
         _os.write(2, message.encode("utf-8", errors="replace"))
     except OSError:
         pass
+
+
+def _verify_replay_consumed() -> None:
+    if _RECORDED_TICKS is None:
+        return
+
+    remaining = len(_RECORDED_TICKS) - _TICK_INDEX
+    if remaining:
+        _write_stderr(
+            f"[dal-runtime-python] replay did not consume {remaining} recorded clock ticks\n"
+        )
 
 
 install()
