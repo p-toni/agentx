@@ -1,0 +1,16 @@
+{
+  "name": "@deterministic-agent-lab/gate-api",
+  "version": "0.1.0",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "dependencies": {
+    "@deterministic-agent-lab/journal": "workspace:*",
+    "fastify": "^4.25.2"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "dev": "tsx watch src/server.ts"
+  }
+}
