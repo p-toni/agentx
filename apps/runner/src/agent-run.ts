@@ -418,7 +418,7 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     'no-new-privileges:true',
     '--cap-drop=ALL',
     '--mount',
-    `type=bind,src=${options.workspacePath},dst=/workspace,readonly=false`,
+    `type=bind,src=${options.workspacePath},dst=/workspace`,
     '--tmpfs',
     '/tmp:rw',
     '--tmpfs',
