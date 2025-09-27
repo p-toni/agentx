@@ -416,16 +416,26 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     '--read-only',
     '--security-opt',
     'no-new-privileges:true',
-    '--cap-drop=ALL',
+    '--cap-drop=ALL'
+  ];
+
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
+
+  if (uid !== undefined && gid !== undefined) {
+    args.push('--user', `${uid}:${gid}`);
+  }
+
+  args.push(
     '--mount',
-    `type=bind,src=${options.workspacePath},dst=/workspace`,
+    `type=bind,src=${options.workspacePath},dst=/workspace,readonly=false,bind-propagation=rprivate`,
     '--tmpfs',
     '/tmp:rw',
     '--tmpfs',
     '/run:rw',
     '--tmpfs',
     '/var/tmp:rw'
-  ];
+  );
 
   if (options.deterministic) {
     args.push('--cpus=1', '--cpu-shares=1024', '--cpuset-cpus=0');
