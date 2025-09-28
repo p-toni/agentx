@@ -443,14 +443,9 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     args.push('--user', `${uid}:${gid}`);
   }
 
-  const workspaceMountOptions = [`type=bind,src=${options.workspacePath},dst=/workspace,rw`];
-  if (isLinuxHost()) {
-    workspaceMountOptions.push('bind-propagation=rprivate');
-  }
-
   args.push(
     '--mount',
-    workspaceMountOptions.join(','),
+    `type=bind,src=${options.workspacePath},dst=/workspace,bind-propagation=rprivate`,
     '--tmpfs',
     '/tmp:rw',
     '--tmpfs',
