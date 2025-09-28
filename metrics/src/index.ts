@@ -253,10 +253,30 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 async function hasDocker(): Promise<boolean> {
+  let tempDir: string | undefined;
   try {
     await execa('docker', ['version'], { stdio: 'ignore' });
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'metrics-docker-check-'));
+    await execa(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${tempDir}:/workspace`,
+        'node:20-alpine',
+        'sh',
+        '-c',
+        'echo ok > /workspace/check'
+      ],
+      { stdio: 'ignore' }
+    );
     return true;
   } catch {
     return false;
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 }

@@ -176,11 +176,27 @@ async function openBundleFromTar(bundlePath: string) {
 }
 
 async function hasDocker(): Promise<boolean> {
+  let tempDir: string | undefined;
   try {
     await exec('docker', ['version']);
+    tempDir = await mkdtemp(path.join(tmpdir(), 'replay-docker-check-'));
+    await exec('docker', [
+      'run',
+      '--rm',
+      '-v',
+      `${tempDir}:/workspace`,
+      'node:20-alpine',
+      'sh',
+      '-c',
+      'echo ok > /workspace/check'
+    ]);
     return true;
   } catch {
     return false;
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 }
 
