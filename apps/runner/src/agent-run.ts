@@ -444,8 +444,8 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
   }
 
   args.push(
-    '--mount',
-    `type=bind,src=${options.workspacePath},dst=/workspace,bind-propagation=rprivate`,
+    '-v',
+    `${options.workspacePath}:/workspace:rw`,
     '--tmpfs',
     '/tmp:rw',
     '--tmpfs',
