@@ -571,6 +571,7 @@ function normaliseClockSnapshot(clock: ClockSnapshot | undefined, initialTime: s
 
 async function createWorkspace(baseTar?: string): Promise<WorkspaceInfo> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-workspace-'));
+  await fs.chmod(root, 0o755);
   const lowerDir = path.join(root, 'lower');
   await fs.mkdir(lowerDir, { recursive: true });
 
@@ -586,6 +587,7 @@ async function createWorkspace(baseTar?: string): Promise<WorkspaceInfo> {
 
 async function recreateWorkspace(bundleRoot: string, fsDiffPath: string): Promise<WorkspaceInfo> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-replay-workspace-'));
+  await fs.chmod(root, 0o755);
   const lowerDir = path.join(root, 'lower');
   await fs.mkdir(lowerDir, { recursive: true });
 
