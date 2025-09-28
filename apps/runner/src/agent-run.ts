@@ -403,17 +403,18 @@ async function startProxy(options: {
 
 async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
   const proxyUrl = `http://127.0.0.1:${options.proxyPort}`;
+  const containerWorkspacePath = '/usr/src/app';
   const envVars = new Map<string, string>([
     ['AGENT_SEED', String(options.seed)],
     ['AGENT_START_TIME', options.startTime],
     ['HTTP_PROXY', proxyUrl],
     ['HTTPS_PROXY', proxyUrl],
     ['ALL_PROXY', proxyUrl],
-    ['NODE_EXTRA_CA_CERTS', '/workspace/.agent/ca.pem'],
-    ['REQUESTS_CA_BUNDLE', '/workspace/.agent/ca.pem'],
-    ['CURL_CA_BUNDLE', '/workspace/.agent/ca.pem'],
+    ['NODE_EXTRA_CA_CERTS', `${containerWorkspacePath}/.agent/ca.pem`],
+    ['REQUESTS_CA_BUNDLE', `${containerWorkspacePath}/.agent/ca.pem`],
+    ['CURL_CA_BUNDLE', `${containerWorkspacePath}/.agent/ca.pem`],
     ['AGENT_EXECUTION_MODE', options.mode],
-    ['AGENT_CLOCK_FILE', '/workspace/.agent/clock.json']
+    ['AGENT_CLOCK_FILE', `${containerWorkspacePath}/.agent/clock.json`]
   ]);
 
   if (options.deterministic) {
@@ -443,9 +444,18 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     args.push('--user', `${uid}:${gid}`);
   }
 
+  const mountOptions = [
+    'type=bind',
+    `src=${options.workspacePath}`,
+    `dst=${containerWorkspacePath}`
+  ];
+  if (isLinuxHost()) {
+    mountOptions.push('bind-propagation=rprivate');
+  }
+
   args.push(
-    '-v',
-    `${options.workspacePath}:/workspace:rw`,
+    '--mount',
+    mountOptions.join(','),
     '--tmpfs',
     '/tmp:rw',
     '--tmpfs',
@@ -462,7 +472,7 @@ async function runDocker(options: RunDockerOptions): Promise<DockerRunResult> {
     args.push('-e', `${key}=${value}`);
   }
 
-  args.push('-w', '/workspace');
+  args.push('-w', containerWorkspacePath);
 
   const commandArgs = [...args, options.image, ...options.command];
 
