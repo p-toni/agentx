@@ -71,10 +71,23 @@ describe('agent-run CLI', () => {
     const recordBundle = path.join(workspace, 'record.tgz');
     await exec('node', [cliPath, 'record', '--image', 'node:20-alpine', '--bundle', recordBundle, '--allow', policyPath, '--base', baseTar, '--seed', '42', 'node', 'echo.js', '  hello  '], workspace);
 
+    const recorded = await openBundleFromTar(recordBundle);
     const replayBundleA = path.join(workspace, 'replay-a.tgz');
     const replayBundleB = path.join(workspace, 'replay-b.tgz');
     await exec('node', [cliPath, 'replay', '--bundle', recordBundle, '--output', replayBundleA]);
     await exec('node', [cliPath, 'replay', '--bundle', recordBundle, '--output', replayBundleB]);
+
+    const workspaceMeta = (recorded.manifest.metadata as Record<string, unknown> | undefined)?.workspace as
+      | { mode?: string; overlayType?: string }
+      | undefined;
+    expect(workspaceMeta?.mode ?? '').toMatch(/^(overlay|copy)$/);
+
+    const envPath = path.join(recorded.root, recorded.manifest.files.env);
+    const envData = JSON.parse(await readFile(envPath, 'utf8')) as {
+      workspace?: { mode?: string; overlayType?: string };
+    };
+    expect(envData.workspace?.mode ?? null).toBe(workspaceMeta?.mode ?? null);
+    expect(envData.workspace?.overlayType ?? null).toBe(workspaceMeta?.overlayType ?? null);
 
     const hashA = await hashBundle(await openBundleFromTar(replayBundleA));
     const hashB = await hashBundle(await openBundleFromTar(replayBundleB));
@@ -257,6 +270,11 @@ describe('agent-run CLI', () => {
     const deletedRaw = await readFile(deletedPath, 'utf8');
     const deleted = JSON.parse(deletedRaw) as string[];
     expect(deleted).toEqual([]);
+
+    const workspaceMeta = (bundle.manifest.metadata as Record<string, unknown> | undefined)?.workspace as
+      | { mode?: string; overlayType?: string }
+      | undefined;
+    expect(workspaceMeta?.mode ?? '').toMatch(/^(overlay|copy)$/);
   }, 120_000);
 });
 

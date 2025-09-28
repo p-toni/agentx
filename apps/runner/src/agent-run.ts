@@ -1,7 +1,7 @@
 import { Command, Option } from 'commander';
 import { spawn, SpawnOptions, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomInt } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
 import { cp, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,6 +57,11 @@ interface WorkspaceInfo {
   mode: WorkspaceMode;
   upperDir?: string;
   overlayWorkDir?: string;
+  unmountCommand?: {
+    command: string;
+    args: string[];
+  };
+  overlayType?: 'kernel' | 'fuse';
 }
 
 interface ProxyHandle {
@@ -163,14 +168,22 @@ program
         command: cmd,
         seed,
         startTime,
-        deterministic
+        deterministic,
+        workspace: {
+          mode: workspace.mode,
+          overlayType: workspace.overlayType
+        }
       },
       env: {
         seed,
         startTime,
         image: options.image,
         command: cmd,
-        deterministic
+        deterministic,
+        workspace: {
+          mode: workspace.mode,
+          overlayType: workspace.overlayType
+        }
       },
       clock: clockData,
       network: networkHar,
@@ -276,7 +289,11 @@ program
         command: envData.command,
         seed: envData.seed,
         startTime: envData.startTime,
-        deterministic
+        deterministic,
+        workspace: {
+          mode: workspace.mode,
+          overlayType: workspace.overlayType
+        }
       },
       env: { ...envData, deterministic },
       clock: clockData,
@@ -592,11 +609,28 @@ async function recreateWorkspace(bundleRoot: string, fsDiffPath: string): Promis
 
 async function cleanupWorkspace(workspace: WorkspaceInfo) {
   if (workspace.mode === 'overlay') {
-    try {
-      await runCommand('umount', [workspace.mountDir]);
-    } catch (error) {
+    let lastError: Error | undefined;
+    const attempts: { command: string; args: string[] }[] = [];
+
+    if (workspace.unmountCommand) {
+      attempts.push(workspace.unmountCommand);
+    }
+
+    attempts.push({ command: 'umount', args: [workspace.mountDir] });
+
+    for (const attempt of attempts) {
+      try {
+        await runCommand(attempt.command, attempt.args);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error as Error;
+      }
+    }
+
+    if (lastError) {
       console.warn(
-        `[agent-run] Failed to unmount overlay workspace ${workspace.mountDir}: ${(error as Error).message}`
+        `[agent-run] Failed to unmount overlay workspace ${workspace.mountDir}: ${lastError.message}`
       );
     }
   }
@@ -614,7 +648,9 @@ async function prepareWorkspace(root: string, lowerDir: string, baseTarPath: str
       await fs.mkdir(upperDir, { recursive: true });
       await fs.mkdir(overlayWorkDir, { recursive: true });
       await fs.mkdir(mountDir, { recursive: true });
-      await mountOverlayWorkspace(lowerDir, upperDir, overlayWorkDir, mountDir);
+
+      const overlayMount = await mountOverlayWorkspace(lowerDir, upperDir, overlayWorkDir, mountDir);
+
       return {
         root,
         lowerDir,
@@ -622,13 +658,18 @@ async function prepareWorkspace(root: string, lowerDir: string, baseTarPath: str
         baseTarPath,
         mode: 'overlay',
         upperDir,
-        overlayWorkDir
+        overlayWorkDir,
+        unmountCommand: overlayMount.unmountCommand,
+        overlayType: overlayMount.type
       };
     } catch (error) {
+      const detail = formatOverlayError(error);
       console.warn(
-        `[agent-run] OverlayFS unavailable (${(error as Error).message}); falling back to copy-on-write workspace.`
+        `[agent-run] OverlayFS unavailable (${detail}); falling back to copy-on-write workspace.`
       );
     }
+  } else {
+    console.warn('[agent-run] OverlayFS unsupported on this platform; using copy-on-write workspace.');
   }
 
   const workDir = path.join(root, 'work');
@@ -641,14 +682,69 @@ function isLinuxHost(): boolean {
   return process.platform === 'linux';
 }
 
+interface OverlayMountResult {
+  type: 'kernel' | 'fuse';
+  unmountCommand: {
+    command: string;
+    args: string[];
+  };
+}
+
 async function mountOverlayWorkspace(
   lowerDir: string,
   upperDir: string,
   workDir: string,
   mountDir: string
-): Promise<void> {
+): Promise<OverlayMountResult> {
   const options = `lowerdir=${lowerDir},upperdir=${upperDir},workdir=${workDir}`;
-  await runCommand('mount', ['-t', 'overlay', 'overlay', '-o', options, mountDir]);
+  const errors: Error[] = [];
+
+  try {
+    await runCommand('mount', ['-t', 'overlay', 'overlay', '-o', options, mountDir]);
+    return {
+      type: 'kernel',
+      unmountCommand: { command: 'umount', args: [mountDir] }
+    };
+  } catch (error) {
+    errors.push(error as Error);
+  }
+
+  const fuseBinary = await findExecutable(['fuse-overlayfs']);
+  if (fuseBinary) {
+    try {
+      await runCommand(fuseBinary, ['-o', options, mountDir]);
+      const fuseUnmountBinary =
+        (await findExecutable(['fusermount3'])) ?? (await findExecutable(['fusermount'])) ?? 'fusermount3';
+      return {
+        type: 'fuse',
+        unmountCommand: { command: fuseUnmountBinary, args: ['-u', mountDir] }
+      };
+    } catch (error) {
+      errors.push(error as Error);
+    }
+  } else {
+    errors.push(new Error('fuse-overlayfs executable not found in PATH'));
+  }
+
+  throw new AggregateError(errors, 'Failed to mount overlay workspace');
+}
+
+function formatOverlayError(error: unknown): string {
+  if (error instanceof AggregateError) {
+    const messages = error.errors
+      .map((cause) => (cause instanceof Error ? cause.message : String(cause)))
+      .filter((message) => message.length > 0);
+    if (messages.length > 0) {
+      return messages.join('; ');
+    }
+    return error.message;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 async function removeExtraction(extracted: { root: string }) {
@@ -781,6 +877,9 @@ async function createCopyModeDiff(lowerDir: string, workDir: string) {
 
   await findDeleted(lowerDir);
 
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  deleted.sort((a, b) => a.localeCompare(b));
+
   return { files, deleted };
 }
 
@@ -828,6 +927,8 @@ async function collectOverlayDiff(upperDir: string, lowerDir: string) {
   };
 
   await walk(upperDir);
+
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
   return { files, deleted: Array.from(deleted).sort() };
 }
@@ -912,6 +1013,39 @@ async function applyDiffFiles(diffDir: string, workDir: string) {
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.copyFile(source, target);
     }
+  }
+}
+
+async function findExecutable(candidates: string[]): Promise<string | undefined> {
+  const searchPaths = (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .filter((segment) => segment.length > 0);
+
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate)) {
+      if (await isExecutable(candidate)) {
+        return candidate;
+      }
+      continue;
+    }
+
+    for (const base of searchPaths) {
+      const resolved = path.join(base, candidate);
+      if (await isExecutable(resolved)) {
+        return resolved;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+async function isExecutable(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 
