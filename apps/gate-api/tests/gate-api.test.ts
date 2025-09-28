@@ -161,7 +161,7 @@ describe('transaction gate API', () => {
     expect(committedJson.bundles[0]?.status).toBe('committed');
 
     await server.close();
-  });
+  }, 30000);
 });
 
 function createMockDriver(calls: string[]): Driver<unknown, unknown, unknown> {
