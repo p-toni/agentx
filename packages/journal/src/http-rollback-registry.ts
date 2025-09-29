@@ -146,7 +146,7 @@ class CompiledHttpRollbackRegistry implements HttpRollbackRegistry {
   constructor(private readonly rules: CompiledHttpRollbackRule[]) {}
 
   findRule(context: HttpRollbackRequestContext): HttpRollbackRuleMatch | null {
-    let bodyJson = context.bodyJson;
+    const bodyJson = context.bodyJson;
     for (const rule of this.rules) {
       if (!this.matchesRule(rule, context, bodyJson)) {
         continue;
@@ -207,14 +207,14 @@ class CompiledHttpRollbackRegistry implements HttpRollbackRegistry {
         }
       }
 
-    for (const matcher of rule.matchers.json) {
-      const jsonSource = bodyJson ?? null;
-      const results = (JSONPath({ path: matcher.path, json: jsonSource }) as unknown[]).filter(
-        (value) => value !== undefined
-      );
-      if (matcher.exists && results.length === 0) {
-        return false;
-      }
+      for (const matcher of rule.matchers.json) {
+        const jsonSource = bodyJson ?? null;
+        const results = (JSONPath({ path: matcher.path, json: jsonSource }) as unknown[]).filter(
+          (value) => value !== undefined
+        );
+        if (matcher.exists && results.length === 0) {
+          return false;
+        }
         if ('equals' in matcher) {
           const hasEqual = results.some((value) => deepEqual(value, matcher.equals));
           if (!hasEqual) {
