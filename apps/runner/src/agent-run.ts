@@ -574,6 +574,7 @@ async function createWorkspace(baseTar?: string): Promise<WorkspaceInfo> {
   await fs.chmod(root, 0o755);
   const lowerDir = path.join(root, 'lower');
   await fs.mkdir(lowerDir, { recursive: true });
+  await fs.chmod(lowerDir, 0o755);
 
   if (baseTar) {
     await extractTar(path.resolve(baseTar), lowerDir);
@@ -590,6 +591,7 @@ async function recreateWorkspace(bundleRoot: string, fsDiffPath: string): Promis
   await fs.chmod(root, 0o755);
   const lowerDir = path.join(root, 'lower');
   await fs.mkdir(lowerDir, { recursive: true });
+  await fs.chmod(lowerDir, 0o755);
 
   const fsDiffRoot = path.join(bundleRoot, fsDiffPath.replace(/\/$/, ''));
   const baseTar = path.join(fsDiffRoot, 'base.tar');
@@ -661,6 +663,12 @@ async function prepareWorkspace(root: string, lowerDir: string, baseTarPath: str
       await fs.mkdir(overlayWorkDir, { recursive: true });
       await fs.mkdir(mountDir, { recursive: true });
 
+      await Promise.all([
+        fs.chmod(upperDir, 0o755),
+        fs.chmod(overlayWorkDir, 0o755),
+        fs.chmod(mountDir, 0o755)
+      ]);
+
       const overlayMount = await mountOverlayWorkspace(lowerDir, upperDir, overlayWorkDir, mountDir);
 
       return {
@@ -686,6 +694,7 @@ async function prepareWorkspace(root: string, lowerDir: string, baseTarPath: str
 
   const workDir = path.join(root, 'work');
   await fs.mkdir(workDir, { recursive: true });
+  await fs.chmod(workDir, 0o755);
   await copyLowerToWork(lowerDir, workDir);
   return { root, lowerDir, mountDir: workDir, baseTarPath, mode: 'copy' };
 }
@@ -724,7 +733,8 @@ async function mountOverlayWorkspace(
   const fuseBinary = await findExecutable(['fuse-overlayfs']);
   if (fuseBinary) {
     try {
-      await runCommand(fuseBinary, ['-o', options, mountDir]);
+      const fuseOptions = `${options},allow_other`;
+      await runCommand(fuseBinary, ['-o', fuseOptions, mountDir]);
       const fuseUnmountBinary =
         (await findExecutable(['fusermount3'])) ?? (await findExecutable(['fusermount'])) ?? 'fusermount3';
       return {
