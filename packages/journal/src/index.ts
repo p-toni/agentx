@@ -579,8 +579,11 @@ function mergeRollbackMetadata(
   resolved: ResolvedHttpRollback,
   fallback: HttpPostResponseMetadata | undefined
 ): HttpPostResponseMetadata {
-  const metadata: HttpPostResponseMetadata = {
+  const resourceId = resolved.id ?? fallback?.resourceId;
+
+  return {
     ...fallback,
+    resourceId,
     rollbackRule: {
       name: resolved.ruleName,
       method: resolved.method,
@@ -592,13 +595,7 @@ function mergeRollbackMetadata(
     },
     rollbackMethod: resolved.method,
     rollbackPath: resolved.path
-  };
-
-  if (resolved.id) {
-    metadata.resourceId = resolved.id;
-  }
-
-  return metadata;
+  } satisfies HttpPostResponseMetadata;
 }
 
 export interface LlmCallPayload {
