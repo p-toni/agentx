@@ -3,8 +3,18 @@ import cors from '@fastify/cors';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import path from 'node:path';
-import { Journal, type Driver, type Intent } from '@deterministic-agent-lab/journal';
-import { FileWriteDriver, HttpPostDriver, LlmCallDriver } from '@deterministic-agent-lab/journal';
+import {
+  Journal,
+  FileWriteDriver,
+  HttpPostDriver,
+  LlmCallDriver,
+  createHttpRollbackRegistry,
+  tryLoadHttpRollbackRegistrySync,
+  type Driver,
+  type Intent,
+  type HttpRollbackRegistry,
+  type HttpPostPayload
+} from '@deterministic-agent-lab/journal';
 import { GateStore, generateIntentId, type ApprovalRecord } from './store';
 import { loadPlanSummary, type LoadedIntent, type FileDiffSummary, type PromptRecord } from './bundle';
 import { loadPolicy, type PolicyEvaluation } from './policy';
@@ -15,6 +25,7 @@ export interface GateApiOptions {
   readonly drivers?: Record<string, DriverFactory>;
   readonly journal?: Journal;
   readonly clock?: () => Date;
+  readonly httpRollbackRegistry?: HttpRollbackRegistry;
 }
 
 export type DriverFactory = (intent: LoadedIntent) => Driver<unknown, unknown, unknown>;
@@ -47,6 +58,16 @@ export interface PlanIntentSummary {
   readonly timestamp?: string;
   readonly payload?: unknown;
   readonly metadata?: Record<string, unknown>;
+  readonly rollback?: PlanRollbackSummary;
+}
+
+export interface PlanRollbackSummary {
+  readonly available: boolean;
+  readonly rule?: string;
+  readonly method?: 'DELETE' | 'POST';
+  readonly pathTemplate?: string;
+  readonly requiresId?: boolean;
+  readonly idSources?: string[];
 }
 
 export function buildServer(options: GateApiOptions): FastifyInstance {
@@ -55,9 +76,10 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
   const dataDir = options.dataDir ?? path.join(process.cwd(), '.gate');
   const store = new GateStore(dataDir);
   const journal = options.journal ?? new Journal({ filePath: path.join(dataDir, 'journal.jsonl') });
-  const driverRegistry = options.drivers ?? createDefaultDriverRegistry();
   const clock = options.clock ?? (() => new Date());
   const policyPath = options.policyPath;
+  const rollbackRegistry = options.httpRollbackRegistry ?? loadHttpRollbackRegistry(policyPath);
+  const driverRegistry = options.drivers ?? createDefaultDriverRegistry(rollbackRegistry);
 
   fastify.get('/bundles', async () => {
     const bundles = store.listBundles();
@@ -103,16 +125,19 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     const approval = store.getApproval(bundleId) ?? null;
     const status = determineStatus(store, bundleId, approval);
 
+    const intentSummaries = intents.map((intent) => ({
+      id: intent.id,
+      type: intent.type,
+      timestamp: intent.timestamp,
+      payload: intent.payload,
+      metadata: intent.metadata,
+      rollback: describeRollbackIntent(intent, rollbackRegistry)
+    }));
+
     const response: PlanResponse = {
       bundleId,
       createdAt: bundle.createdAt,
-      intents: intents.map((intent) => ({
-        id: intent.id,
-        type: intent.type,
-        timestamp: intent.timestamp,
-        payload: intent.payload,
-        metadata: intent.metadata
-      })),
+      intents: intentSummaries,
       fsDiff: plan.fsDiff,
       network: evaluation.network,
       networkHar: plan.networkHar,
@@ -180,7 +205,7 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     const receipts: Array<{ intentId: string; receipt: unknown }> = [];
 
     for (const intent of intents) {
-      const driver = resolveDriver(driverRegistry, intent);
+      const driver = resolveDriver(driverRegistry, intent, rollbackRegistry);
       const journalIntent = toJournalIntent(bundleId, intent);
       const context = { journal };
       if (typeof driver.plan === 'function') {
@@ -227,7 +252,7 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
       if (!intent) {
         continue;
       }
-      const driver = resolveDriver(driverRegistry, intent);
+      const driver = resolveDriver(driverRegistry, intent, rollbackRegistry);
       const journalIntent = toJournalIntent(bundleId, intent);
       const context = { journal };
       if (typeof driver.rollback === 'function') {
@@ -301,37 +326,118 @@ function determineStatus(store: GateStore, bundleId: string, approval: ApprovalR
   return 'pending';
 }
 
-function resolveDriver(registry: Record<string, DriverFactory>, intent: LoadedIntent): Driver<unknown, unknown, unknown> {
+function resolveDriver(
+  registry: Record<string, DriverFactory>,
+  intent: LoadedIntent,
+  rollbackRegistry: HttpRollbackRegistry | null
+): Driver<unknown, unknown, unknown> {
   const factory = registry[intent.type];
   if (factory) {
     return factory(intent);
   }
-  const fallback = createDefaultDriver(intent.type);
+  const fallback = createDefaultDriver(intent.type, rollbackRegistry);
   if (!fallback) {
     throw new Error(`No driver registered for intent type ${intent.type}`);
   }
   return fallback;
 }
 
-function createDefaultDriverRegistry(): Record<string, DriverFactory> {
+function createDefaultDriverRegistry(rollbackRegistry: HttpRollbackRegistry | null): Record<string, DriverFactory> {
   return {
     'files.write': () => new FileWriteDriver(),
-    'http.post': () => new HttpPostDriver(),
+    'http.post': () => new HttpPostDriver({ rollbackRegistry }),
     'llm.call': () => new LlmCallDriver()
   };
 }
 
-function createDefaultDriver(type: string): Driver<unknown, unknown, unknown> | undefined {
+function createDefaultDriver(
+  type: string,
+  rollbackRegistry: HttpRollbackRegistry | null
+): Driver<unknown, unknown, unknown> | undefined {
   switch (type) {
     case 'files.write':
       return new FileWriteDriver();
     case 'http.post':
-      return new HttpPostDriver();
+      return new HttpPostDriver({ rollbackRegistry });
     case 'llm.call':
       return new LlmCallDriver();
     default:
       return undefined;
   }
+}
+
+function describeRollbackIntent(
+  intent: LoadedIntent,
+  registry: HttpRollbackRegistry | null
+): PlanRollbackSummary | undefined {
+  if (!registry || intent.type !== 'http.post') {
+    return intent.type === 'http.post' ? { available: false } : undefined;
+  }
+
+  const payload = intent.payload as HttpPostPayload | undefined;
+  if (!payload || typeof payload.url !== 'string') {
+    return { available: false };
+  }
+
+  const headers = {
+    'content-type': 'application/json',
+    ...(payload.headers ?? {})
+  };
+
+  const bodyText =
+    typeof payload.body === 'string' ? payload.body : JSON.stringify(payload.body ?? null);
+
+  let bodyJson: unknown;
+  if (typeof payload.body === 'string') {
+    try {
+      bodyJson = JSON.parse(payload.body);
+    } catch {
+      bodyJson = undefined;
+    }
+  } else {
+    bodyJson = payload.body;
+  }
+
+  const match = registry.findRule({
+    method: 'POST',
+    url: payload.url,
+    headers,
+    bodyText,
+    bodyJson
+  });
+
+  if (!match) {
+    return { available: false };
+  }
+
+  return {
+    available: true,
+    rule: match.name,
+    method: match.method,
+    pathTemplate: match.pathTemplate,
+    requiresId: match.requiresId,
+    idSources: match.idSources.length > 0 ? match.idSources : undefined
+  } satisfies PlanRollbackSummary;
+}
+
+function loadHttpRollbackRegistry(policyPath: string): HttpRollbackRegistry {
+  const policyDir = resolvePolicyDirectory(policyPath);
+  const candidates = ['http-rollback.yaml', 'http-rollback.yml', 'http-rollback.json'];
+  for (const candidate of candidates) {
+    const attempt = tryLoadHttpRollbackRegistrySync(path.join(policyDir, candidate));
+    if (attempt) {
+      return attempt;
+    }
+  }
+  return createHttpRollbackRegistry(null);
+}
+
+function resolvePolicyDirectory(policyPath: string): string {
+  const extension = path.extname(policyPath).toLowerCase();
+  if (extension === '.wasm' || extension === '.json') {
+    return path.dirname(policyPath);
+  }
+  return policyPath;
 }
 
 if (require.main === module) {

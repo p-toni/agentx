@@ -1,0 +1,21 @@
+rules:
+  - name: example-mock-api
+    host: api.example.com
+    commit:
+      method: POST
+      path: /v1/resources
+      idFrom:
+        - json:$.id
+    rollback:
+      method: DELETE
+      pathTemplate: /v1/resources/{id}
+  - name: example-location-header
+    host: web.example.com
+    commit:
+      method: POST
+      path: /api/items
+      idFrom:
+        - header:location
+    rollback:
+      method: DELETE
+      pathTemplate: '{id}'

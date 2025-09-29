@@ -19,6 +19,16 @@ export interface PlanIntentSummary {
   readonly timestamp?: string;
   readonly payload?: unknown;
   readonly metadata?: Record<string, unknown>;
+  readonly rollback?: PlanRollbackSummary;
+}
+
+export interface PlanRollbackSummary {
+  readonly available: boolean;
+  readonly rule?: string;
+  readonly method?: 'DELETE' | 'POST';
+  readonly pathTemplate?: string;
+  readonly requiresId?: boolean;
+  readonly idSources?: string[];
 }
 
 export interface FileVersion {

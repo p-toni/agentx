@@ -10,6 +10,11 @@ import {
   PromptTokenEvent,
   PromptTraceStore
 } from '@deterministic-agent-lab/trace';
+import {
+  type HttpRollbackRegistry,
+  type HttpRollbackRuleMatch,
+  type ResolvedHttpRollback
+} from './http-rollback-registry';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export interface Intent<TPayload, TReceipt> {
@@ -306,11 +311,28 @@ export interface HttpPostReceipt {
   readonly metadata?: HttpPostResponseMetadata;
 }
 
+export interface HttpPostDriverOptions {
+  readonly rollbackRegistry?: HttpRollbackRegistry | null;
+}
+
 interface HttpPostResponseMetadata {
+  readonly rollbackRule?: {
+    readonly name: string;
+    readonly method: 'DELETE' | 'POST';
+    readonly pathTemplate: string;
+    readonly path: string;
+    readonly url: string;
+    readonly id?: string;
+    readonly headers?: Record<string, string>;
+  };
   readonly resourceId?: string;
   readonly location?: string;
   readonly rollbackMethod?: 'DELETE' | 'POST';
   readonly rollbackPath?: string;
+}
+
+interface PreparedRollbackContext {
+  readonly match: HttpRollbackRuleMatch;
 }
 
 interface HttpPostPrepared {
@@ -318,10 +340,17 @@ interface HttpPostPrepared {
   headers: Record<string, string>;
   bodyText: string;
   idempotencyKey: string;
+  rollback?: PreparedRollbackContext;
   metadata?: HttpPostResponseMetadata;
 }
 
 export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, HttpPostPrepared> {
+  private readonly rollbackRegistry: HttpRollbackRegistry | null;
+
+  constructor(options: HttpPostDriverOptions = {}) {
+    this.rollbackRegistry = options.rollbackRegistry ?? null;
+  }
+
   async plan(intent: Intent<HttpPostPayload, HttpPostReceipt>): Promise<void> {
     if (!intent.payload.url) {
       throw new Error('http.post requires a url');
@@ -350,11 +379,37 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
         ? intent.payload.body
         : JSON.stringify(intent.payload.body ?? null);
 
+    let bodyJson: unknown;
+    if (typeof intent.payload.body === 'string') {
+      try {
+        bodyJson = JSON.parse(intent.payload.body);
+      } catch {
+        bodyJson = undefined;
+      }
+    } else {
+      bodyJson = intent.payload.body;
+    }
+
+    let rollback: PreparedRollbackContext | undefined;
+    if (this.rollbackRegistry) {
+      const match = this.rollbackRegistry.findRule({
+        method: 'POST',
+        url: intent.payload.url,
+        headers,
+        bodyText,
+        bodyJson
+      });
+      if (match) {
+        rollback = { match };
+      }
+    }
+
     return {
       url: intent.payload.url,
       headers,
       bodyText,
-      idempotencyKey
+      idempotencyKey,
+      rollback
     };
   }
 
@@ -371,7 +426,21 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
     const responseBody = await response.text();
     const responseHash = createHash('sha256').update(responseBody).digest('hex');
     const idempotencyKey = prepared.idempotencyKey;
-    const metadata = extractResponseMetadata(response, responseBody);
+
+    const fallbackMetadata = extractResponseMetadata(response, responseBody);
+    let metadata: HttpPostResponseMetadata | undefined = fallbackMetadata;
+
+    if (prepared.rollback) {
+      const resolved = prepared.rollback.match.resolve({
+        baseUrl: prepared.url,
+        responseHeaders: collectHeaders(response.headers),
+        responseBodyText: responseBody
+      });
+      if (resolved) {
+        metadata = mergeRollbackMetadata(resolved, fallbackMetadata);
+      }
+    }
+
     if (metadata) {
       prepared.metadata = metadata;
     }
@@ -380,7 +449,7 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
       status: response.status,
       idempotencyKey,
       responseHash,
-    metadata
+      metadata
     };
   }
 
@@ -394,6 +463,28 @@ export class HttpPostDriver implements Driver<HttpPostPayload, HttpPostReceipt, 
     if (!metadata) {
       labelIntentRequiresManualReview(intent, 'non-reversible');
       return;
+    }
+
+    if (metadata.rollbackRule) {
+      const headers: Record<string, string> = {
+        'Idempotency-Key': `${prepared.idempotencyKey}-rollback`
+      };
+      if (metadata.rollbackRule.headers) {
+        for (const [key, value] of Object.entries(metadata.rollbackRule.headers)) {
+          headers[key] = value;
+        }
+      }
+      try {
+        await fetch(metadata.rollbackRule.url, {
+          method: metadata.rollbackRule.method,
+          headers
+        });
+        return;
+      } catch (error) {
+        console.warn(`Rollback attempt for ${metadata.rollbackRule.url} failed: ${(error as Error).message}`);
+        labelIntentRequiresManualReview(intent, 'rollback_failed');
+        return;
+      }
     }
 
     const target = buildRollbackTarget(prepared.url, metadata);
@@ -449,6 +540,10 @@ function extractResponseMetadata(response: Response, bodyText: string): HttpPost
 }
 
 function buildRollbackTarget(url: string, metadata: HttpPostResponseMetadata): { method: 'DELETE' | 'POST'; url: string } | null {
+  if (metadata.rollbackRule) {
+    return { method: metadata.rollbackRule.method, url: metadata.rollbackRule.url };
+  }
+
   if (metadata.rollbackPath) {
     const base = new URL(url);
     const targetUrl = new URL(metadata.rollbackPath, base);
@@ -470,6 +565,40 @@ function buildRollbackTarget(url: string, metadata: HttpPostResponseMetadata): {
 
 function labelIntentRequiresManualReview(intent: Intent<HttpPostPayload, HttpPostReceipt>, reason: string): void {
   console.warn(`Intent ${intent.idempotencyKey} requires manual remediation (${reason}).`);
+}
+
+function collectHeaders(headers: Headers): Record<string, string> {
+  const result: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    result[key.toLowerCase()] = value;
+  });
+  return result;
+}
+
+function mergeRollbackMetadata(
+  resolved: ResolvedHttpRollback,
+  fallback: HttpPostResponseMetadata | undefined
+): HttpPostResponseMetadata {
+  const metadata: HttpPostResponseMetadata = {
+    ...fallback,
+    rollbackRule: {
+      name: resolved.ruleName,
+      method: resolved.method,
+      pathTemplate: resolved.pathTemplate,
+      path: resolved.path,
+      url: resolved.url,
+      id: resolved.id,
+      headers: resolved.headers ? { ...resolved.headers } : undefined
+    },
+    rollbackMethod: resolved.method,
+    rollbackPath: resolved.path
+  };
+
+  if (resolved.id) {
+    metadata.resourceId = resolved.id;
+  }
+
+  return metadata;
 }
 
 export interface LlmCallPayload {
@@ -774,3 +903,18 @@ async function safeReadText(response: Response): Promise<string> {
     return '<unavailable>';
   }
 }
+
+export {
+  createHttpRollbackRegistry,
+  loadHttpRollbackRegistrySync,
+  tryLoadHttpRollbackRegistrySync
+} from './http-rollback-registry';
+
+export type {
+  HttpRollbackRegistryConfig,
+  HttpRollbackRuleConfig,
+  HttpRollbackJsonMatcher,
+  HttpRollbackRegistry,
+  HttpRollbackRuleMatch,
+  ResolvedHttpRollback
+} from './http-rollback-registry';

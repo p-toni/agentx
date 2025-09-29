@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createBundle } from '@deterministic-agent-lab/trace';
-import { buildServer, type DriverFactory } from '../src/server';
-import type { Driver, Intent } from '@deterministic-agent-lab/journal';
+import { buildServer, type DriverFactory, type PlanResponse } from '../src/server';
+import type { Driver, Intent, HttpPostReceipt } from '@deterministic-agent-lab/journal';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -161,6 +163,118 @@ describe('transaction gate API', () => {
     expect(committedJson.bundles[0]?.status).toBe('committed');
 
     await server.close();
+  }, 30000);
+
+  it('surfaces rollback registry rules for http.post intents and reverts successfully', async () => {
+    let deleteCount = 0;
+    const httpServer = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (req.method === 'POST' && url.pathname === '/messages') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ messageId: 'message-1' }));
+        return;
+      }
+      if (req.method === 'DELETE' && url.pathname === '/messages/message-1') {
+        deleteCount += 1;
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const httpAddress = httpServer.address() as AddressInfo;
+    const messageUrl = `http://127.0.0.1:${httpAddress.port}/messages`;
+
+    const workspace = await mkdtemp(join(tmpdir(), 'gate-api-http-rollback-'));
+    cleanup.push(workspace);
+
+    const policyDir = join(workspace, 'policy');
+    await mkdir(policyDir, { recursive: true });
+    await copyFile(join(repoPolicyDir, 'policy.wasm'), join(policyDir, 'policy.wasm'));
+    await writeFile(
+      join(policyDir, 'data.json'),
+      JSON.stringify(
+        {
+          config: {
+            version: 'v1',
+            allow: [
+              {
+                domains: ['127.0.0.1'],
+                methods: ['POST', 'DELETE'],
+                paths: ['/messages']
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    await writeFile(
+      join(policyDir, 'http-rollback.yaml'),
+      `rules:\n  - name: message-create\n    host: 127.0.0.1\n    commit:\n      method: POST\n      path: /messages\n      idFrom:\n        - json:$.messageId\n    rollback:\n      method: DELETE\n      pathTemplate: /messages/{id}\n`
+    );
+
+    const bundleDir = join(workspace, 'bundle');
+    await mkdir(bundleDir, { recursive: true });
+    await createBundle(bundleDir, {
+      createdAt: '2024-03-01T00:00:00.000Z',
+      intents: [
+        {
+          timestamp: '2024-03-01T00:00:01.000Z',
+          intent: 'http.post',
+          payload: {
+            url: messageUrl,
+            body: { message: 'observe rollback registry' }
+          }
+        }
+      ],
+      network: JSON.stringify({ log: { entries: [] } })
+    });
+
+    const bundlePath = join(workspace, 'bundle.tgz');
+    await createTarball(bundleDir, bundlePath);
+
+    const dataDir = join(workspace, '.gate');
+    const server = buildServer({ policyPath: policyDir, dataDir });
+
+    const upload = await server.inject({
+      method: 'POST',
+      url: '/bundles',
+      payload: { bundle: await fileToBase64(bundlePath) }
+    });
+    expect(upload.statusCode).toBe(201);
+    const bundleId = (upload.json() as { bundleId: string }).bundleId;
+
+    const plan = await server.inject({ method: 'GET', url: `/bundles/${bundleId}/plan` });
+    expect(plan.statusCode).toBe(200);
+    const planJson = plan.json() as PlanResponse;
+    expect(planJson.intents[0]?.rollback).toEqual(
+      expect.objectContaining({
+        available: true,
+        rule: 'message-create',
+        method: 'DELETE',
+        pathTemplate: '/messages/{id}'
+      })
+    );
+
+    const commit = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/commit` });
+    expect(commit.statusCode).toBe(200);
+    const commitJson = commit.json() as {
+      receipts: Array<{ receipt: HttpPostReceipt }>;
+    };
+    expect(commitJson.receipts[0]?.receipt.metadata?.rollbackRule?.id).toBe('message-1');
+
+    const revert = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/revert` });
+    expect(revert.statusCode).toBe(200);
+    expect(deleteCount).toBeGreaterThanOrEqual(1);
+
+    await server.close();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   }, 30000);
 });
 

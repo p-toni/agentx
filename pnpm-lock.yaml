@@ -176,6 +176,12 @@ importers:
       '@deterministic-agent-lab/trace':
         specifier: workspace:*
         version: link:../trace
+      jsonpath-plus:
+        specifier: ^8.1.0
+        version: 8.1.0
+      yaml:
+        specifier: ^2.8.0
+        version: 2.8.1
 
   packages/proxy:
     dependencies:
@@ -3825,6 +3831,12 @@ packages:
       universalify: 2.0.1
     optionalDependencies:
       graceful-fs: 4.2.11
+    dev: false
+
+  /jsonpath-plus@8.1.0:
+    resolution: {integrity: sha512-qVTiuKztFGw0dGhYi3WNqvddx3/SHtyDT0xJaeyz4uP0d1tkpG+0y5uYQ4OcIo1TLAz3PE/qDOW9F0uDt3+CTw==}
+    engines: {node: '>=14.0.0'}
+    hasBin: true
     dev: false
 
   /jsx-ast-utils@3.3.5:

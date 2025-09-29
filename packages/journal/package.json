@@ -21,6 +21,8 @@
     "dev": "tsc --watch --project tsconfig.json --preserveWatchOutput"
   },
   "dependencies": {
-    "@deterministic-agent-lab/trace": "workspace:*"
+    "@deterministic-agent-lab/trace": "workspace:*",
+    "jsonpath-plus": "^8.1.0",
+    "yaml": "^2.8.0"
   }
 }
