@@ -34,7 +34,7 @@ describe('agent-run CLI', () => {
       await exec('pnpm', ['--filter', '@deterministic-agent-lab/runtime-node', 'build'], repoRoot);
     }
     dockerAvailable = await hasDocker();
-  });
+  }, 120_000);
 
   afterAll(async () => {
     while (tempDirs.length > 0) {
