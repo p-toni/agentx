@@ -11,6 +11,14 @@ import {
   HttpPostDriver,
   type HttpPostPayload,
   type HttpPostReceipt,
+  EmailSendDriver,
+  type EmailSendPayload,
+  type EmailSendReceipt,
+  MockEmailProvider,
+  CalendarEventDriver,
+  type CalendarEventPayload,
+  type CalendarEventReceipt,
+  MockCalendarProvider,
   createHttpRollbackRegistry,
   Intent,
   Journal,
@@ -292,6 +300,129 @@ describe('HttpPostDriver', () => {
     warnSpy.mockRestore();
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
+
+describe('EmailSendDriver', () => {
+  it('commits emails and rolls back via mock provider', async () => {
+    const workspace = await createWorkspace();
+    const journal = new Journal(constantClockOptions(join(workspace, 'intents.jsonl')));
+    const provider = new MockEmailProvider();
+    const driver = new EmailSendDriver({ provider });
+
+    const intent: Intent<EmailSendPayload, EmailSendReceipt> = {
+      type: 'email.send',
+      idempotencyKey: 'email-1',
+      payload: {
+        to: ['alice@example.com'],
+        cc: ['bob@example.com'],
+        subject: 'Greetings',
+        bodyText: 'Hello world'
+      }
+    };
+
+    const prepared = await driver.prepare(intent, { journal });
+    expect(prepared.preview.subject).toBe('Greetings');
+    expect(prepared.preview.recipients.to).toContain('alice@example.com');
+
+    const receipt = await driver.commit(intent, prepared, { journal });
+    expect(receipt.messageId).toMatch(/msg-/);
+    expect(provider.getMessage(receipt.messageId)).toBeDefined();
+
+    await driver.rollback(intent, receipt, { journal });
+    expect(provider.getMessage(receipt.messageId)).toBeUndefined();
+  });
+
+  it('labels rollback as manual when provider cannot delete', async () => {
+    const workspace = await createWorkspace();
+    const journal = new Journal(constantClockOptions(join(workspace, 'intents.jsonl')));
+    const provider = new MockEmailProvider({ allowDelete: false });
+    const driver = new EmailSendDriver({ provider });
+
+    const intent: Intent<EmailSendPayload, EmailSendReceipt> = {
+      type: 'email.send',
+      idempotencyKey: 'email-2',
+      payload: {
+        to: ['alice@example.com'],
+        subject: 'Cannot delete',
+        bodyText: 'Body'
+      }
+    };
+
+    const prepared = await driver.prepare(intent, { journal });
+    const receipt = await driver.commit(intent, prepared, { journal });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await driver.rollback(intent, receipt, { journal });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Intent email-2 requires manual remediation (rollback_failed).'
+    );
+    warnSpy.mockRestore();
+    expect(provider.getMessage(receipt.messageId)).toBeDefined();
+  });
+});
+
+describe('CalendarEventDriver', () => {
+  it('creates events and cancels them with the mock provider', async () => {
+    const workspace = await createWorkspace();
+    const journal = new Journal(constantClockOptions(join(workspace, 'intents.jsonl')));
+    const provider = new MockCalendarProvider();
+    const driver = new CalendarEventDriver({ provider });
+
+    const intent: Intent<CalendarEventPayload, CalendarEventReceipt> = {
+      type: 'calendar.event',
+      idempotencyKey: 'calendar-1',
+      payload: {
+        title: 'Demo Meeting',
+        start: '2024-02-01T10:00:00.000Z',
+        end: '2024-02-01T11:00:00.000Z',
+        timezone: 'UTC',
+        attendees: ['alice@example.com', 'bob@example.com'],
+        location: 'Conference Room',
+        description: 'Discuss milestones'
+      }
+    };
+
+    const prepared = await driver.prepare(intent, { journal });
+    expect(prepared.ics).toContain('SUMMARY:Demo Meeting');
+    expect(prepared.ics).toContain('ATTENDEE;CN=alice@example.com');
+
+    const receipt = await driver.commit(intent, prepared, { journal });
+    expect(receipt.eventId).toMatch(/event-/);
+    expect(provider.getEvent(receipt.eventId)).toBeDefined();
+
+    await driver.rollback(intent, receipt, { journal });
+    expect(provider.getEvent(receipt.eventId)).toBeUndefined();
+  });
+
+  it('marks rollback as manual when provider cannot cancel', async () => {
+    const workspace = await createWorkspace();
+    const journal = new Journal(constantClockOptions(join(workspace, 'intents.jsonl')));
+    const provider = new MockCalendarProvider({ allowCancel: false });
+    const driver = new CalendarEventDriver({ provider });
+
+    const intent: Intent<CalendarEventPayload, CalendarEventReceipt> = {
+      type: 'calendar.event',
+      idempotencyKey: 'calendar-2',
+      payload: {
+        title: 'One-way Meeting',
+        start: '2024-03-05T09:00:00.000Z',
+        end: '2024-03-05T09:30:00.000Z',
+        timezone: 'UTC',
+        attendees: ['carol@example.com']
+      }
+    };
+
+    const prepared = await driver.prepare(intent, { journal });
+    const receipt = await driver.commit(intent, prepared, { journal });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await driver.rollback(intent, receipt, { journal });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Intent calendar-2 requires manual remediation (rollback_failed).'
+    );
+    warnSpy.mockRestore();
+    expect(provider.getEvent(receipt.eventId)).toBeDefined();
   });
 });
 

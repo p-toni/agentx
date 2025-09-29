@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -65,6 +65,8 @@ export interface JournalOptions {
 
 const ID_WIDTH = 12;
 const textEncoder = new TextEncoder();
+
+const DEFAULT_PRODID = '-//Deterministic Agent Lab//EN';
 
 export class Journal {
   private readonly filePath: string;
@@ -563,8 +565,418 @@ function buildRollbackTarget(url: string, metadata: HttpPostResponseMetadata): {
   return null;
 }
 
-function labelIntentRequiresManualReview(intent: Intent<HttpPostPayload, HttpPostReceipt>, reason: string): void {
+function labelIntentRequiresManualReview(intent: Intent<unknown, unknown>, reason: string): void {
   console.warn(`Intent ${intent.idempotencyKey} requires manual remediation (${reason}).`);
+}
+
+// Email driver
+
+export interface EmailSendPayload {
+  readonly to: string[];
+  readonly cc?: string[];
+  readonly bcc?: string[];
+  readonly subject: string;
+  readonly bodyText?: string;
+  readonly bodyHtml?: string;
+  readonly headers?: Record<string, string>;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface EmailSendReceipt {
+  readonly providerId: string;
+  readonly messageId: string;
+}
+
+interface EmailSendPrepared {
+  readonly payload: EmailSendPayload;
+  readonly preview: EmailPreview;
+}
+
+interface EmailPreview {
+  readonly subject: string;
+  readonly text?: string;
+  readonly html?: string;
+  readonly recipients: {
+    to: string[];
+    cc: string[];
+    bcc: string[];
+  };
+}
+
+export interface EmailProviderSendRequest {
+  readonly to: string[];
+  readonly cc: string[];
+  readonly bcc: string[];
+  readonly subject: string;
+  readonly bodyText?: string;
+  readonly bodyHtml?: string;
+  readonly headers?: Record<string, string>;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface EmailProviderSendResult {
+  readonly providerId: string;
+  readonly messageId: string;
+}
+
+export interface EmailProviderDeleteRequest {
+  readonly providerId: string;
+  readonly messageId: string;
+}
+
+export interface EmailProvider {
+  sendEmail(request: EmailProviderSendRequest): Promise<EmailProviderSendResult>;
+  deleteEmail(request: EmailProviderDeleteRequest): Promise<boolean>;
+}
+
+export interface EmailSendDriverOptions {
+  readonly provider?: EmailProvider;
+}
+
+export class EmailSendDriver implements Driver<EmailSendPayload, EmailSendReceipt, EmailSendPrepared> {
+  private readonly provider: EmailProvider;
+
+  constructor(options: EmailSendDriverOptions = {}) {
+    this.provider = options.provider ?? new MockEmailProvider();
+  }
+
+  async plan(intent: Intent<EmailSendPayload, EmailSendReceipt>): Promise<void> {
+    const payload = intent.payload;
+    if (!Array.isArray(payload.to) || payload.to.length === 0) {
+      throw new Error('email.send requires at least one recipient');
+    }
+    if (!payload.subject || payload.subject.trim().length === 0) {
+      throw new Error('email.send subject is required');
+    }
+    if (!payload.bodyText && !payload.bodyHtml) {
+      throw new Error('email.send requires bodyText or bodyHtml');
+    }
+  }
+
+  async validate(intent: Intent<EmailSendPayload, EmailSendReceipt>): Promise<void> {
+    const allRecipients = [...(intent.payload.to ?? []), ...(intent.payload.cc ?? []), ...(intent.payload.bcc ?? [])];
+    allRecipients.forEach((address) => {
+      if (typeof address !== 'string' || address.trim().length === 0) {
+        throw new Error(`Invalid email address: ${String(address)}`);
+      }
+    });
+  }
+
+  async prepare(intent: Intent<EmailSendPayload, EmailSendReceipt>): Promise<EmailSendPrepared> {
+    const preview: EmailPreview = {
+      subject: intent.payload.subject,
+      text: intent.payload.bodyText,
+      html: intent.payload.bodyHtml,
+      recipients: {
+        to: [...(intent.payload.to ?? [])],
+        cc: [...(intent.payload.cc ?? [])],
+        bcc: [...(intent.payload.bcc ?? [])]
+      }
+    };
+
+    return {
+      payload: intent.payload,
+      preview
+    };
+  }
+
+  async commit(
+    intent: Intent<EmailSendPayload, EmailSendReceipt>,
+    prepared: EmailSendPrepared
+  ): Promise<EmailSendReceipt> {
+    const result = await this.provider.sendEmail({
+      to: prepared.preview.recipients.to,
+      cc: prepared.preview.recipients.cc,
+      bcc: prepared.preview.recipients.bcc,
+      subject: prepared.preview.subject,
+      bodyText: prepared.preview.text,
+      bodyHtml: prepared.preview.html,
+      headers: intent.payload.headers,
+      metadata: intent.metadata ?? intent.payload.metadata
+    });
+
+    return {
+      providerId: result.providerId,
+      messageId: result.messageId
+    } satisfies EmailSendReceipt;
+  }
+
+  async rollback(
+    intent: Intent<EmailSendPayload, EmailSendReceipt>,
+    preparedOrReceipt: EmailSendPrepared | EmailSendReceipt,
+    context: DriverContext
+  ): Promise<void> {
+    void context;
+    const receipt = isEmailReceipt(preparedOrReceipt)
+      ? preparedOrReceipt
+      : (intent.metadata?.receipt as EmailSendReceipt | undefined);
+
+    if (!receipt) {
+      labelIntentRequiresManualReview(intent, 'non-reversible');
+      return;
+    }
+
+    const success = await this.provider.deleteEmail({
+      providerId: receipt.providerId,
+      messageId: receipt.messageId
+    });
+    if (!success) {
+      labelIntentRequiresManualReview(intent, 'rollback_failed');
+    }
+  }
+}
+
+export class MockEmailProvider implements EmailProvider {
+  private counter = 0;
+  private readonly messages = new Map<string, EmailProviderSendRequest & { providerId: string }>();
+  constructor(private readonly options: { allowDelete?: boolean } = {}) {}
+
+  async sendEmail(request: EmailProviderSendRequest): Promise<EmailProviderSendResult> {
+    this.counter += 1;
+    const messageId = `msg-${this.counter}`;
+    const providerId = 'mock-email';
+    this.messages.set(messageId, { ...request, providerId });
+    return { providerId, messageId } satisfies EmailProviderSendResult;
+  }
+
+  async deleteEmail(request: EmailProviderDeleteRequest): Promise<boolean> {
+    if (this.options.allowDelete === false) {
+      return false;
+    }
+    if (request.providerId !== 'mock-email') {
+      return false;
+    }
+    return this.messages.delete(request.messageId);
+  }
+
+  getMessage(messageId: string): (EmailProviderSendRequest & { providerId: string }) | undefined {
+    return this.messages.get(messageId);
+  }
+}
+
+// Calendar driver
+
+export interface CalendarEventPayload {
+  readonly title: string;
+  readonly start: string;
+  readonly end: string;
+  readonly timezone: string;
+  readonly attendees: string[];
+  readonly location?: string;
+  readonly description?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface CalendarEventReceipt {
+  readonly providerId: string;
+  readonly eventId: string;
+}
+
+interface CalendarEventPrepared {
+  readonly payload: CalendarEventPayload;
+  readonly ics: string;
+  readonly uid: string;
+}
+
+export interface CalendarProviderCreateRequest {
+  readonly title: string;
+  readonly start: string;
+  readonly end: string;
+  readonly timezone: string;
+  readonly attendees: string[];
+  readonly location?: string;
+  readonly description?: string;
+  readonly ics: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface CalendarProviderCreateResult {
+  readonly providerId: string;
+  readonly eventId: string;
+}
+
+export interface CalendarProviderCancelRequest {
+  readonly providerId: string;
+  readonly eventId: string;
+}
+
+export interface CalendarProvider {
+  createEvent(request: CalendarProviderCreateRequest): Promise<CalendarProviderCreateResult>;
+  cancelEvent(request: CalendarProviderCancelRequest): Promise<boolean>;
+}
+
+export interface CalendarEventDriverOptions {
+  readonly provider?: CalendarProvider;
+}
+
+export class CalendarEventDriver implements Driver<CalendarEventPayload, CalendarEventReceipt, CalendarEventPrepared> {
+  private readonly provider: CalendarProvider;
+
+  constructor(options: CalendarEventDriverOptions = {}) {
+    this.provider = options.provider ?? new MockCalendarProvider();
+  }
+
+  async plan(intent: Intent<CalendarEventPayload, CalendarEventReceipt>): Promise<void> {
+    const payload = intent.payload;
+    if (!payload.title || payload.title.trim().length === 0) {
+      throw new Error('calendar.event title is required');
+    }
+    if (!payload.start || !payload.end || !payload.timezone) {
+      throw new Error('calendar.event requires start, end, and timezone');
+    }
+    if (!Array.isArray(payload.attendees)) {
+      throw new Error('calendar.event attendees must be an array');
+    }
+  }
+
+  async validate(intent: Intent<CalendarEventPayload, CalendarEventReceipt>): Promise<void> {
+    const { start, end } = intent.payload;
+    if (Number.isNaN(Date.parse(start)) || Number.isNaN(Date.parse(end))) {
+      throw new Error('calendar.event start and end must be valid ISO timestamps');
+    }
+    if (Date.parse(end) <= Date.parse(start)) {
+      throw new Error('calendar.event end must be after start');
+    }
+  }
+
+  async prepare(intent: Intent<CalendarEventPayload, CalendarEventReceipt>): Promise<CalendarEventPrepared> {
+    const uid = randomUUID();
+    const ics = buildIcsForEvent(uid, intent.payload);
+    return { payload: intent.payload, ics, uid } satisfies CalendarEventPrepared;
+  }
+
+  async commit(
+    intent: Intent<CalendarEventPayload, CalendarEventReceipt>,
+    prepared: CalendarEventPrepared
+  ): Promise<CalendarEventReceipt> {
+    const result = await this.provider.createEvent({
+      title: prepared.payload.title,
+      start: prepared.payload.start,
+      end: prepared.payload.end,
+      timezone: prepared.payload.timezone,
+      attendees: prepared.payload.attendees,
+      location: prepared.payload.location,
+      description: prepared.payload.description,
+      ics: prepared.ics,
+      metadata: intent.metadata ?? prepared.payload.metadata
+    });
+
+    return {
+      providerId: result.providerId,
+      eventId: result.eventId
+    } satisfies CalendarEventReceipt;
+  }
+
+  async rollback(
+    intent: Intent<CalendarEventPayload, CalendarEventReceipt>,
+    preparedOrReceipt: CalendarEventPrepared | CalendarEventReceipt,
+    context: DriverContext
+  ): Promise<void> {
+    void preparedOrReceipt;
+    void context;
+    const receipt = isCalendarReceipt(preparedOrReceipt)
+      ? preparedOrReceipt
+      : (intent.metadata?.receipt as CalendarEventReceipt | undefined);
+
+    if (!receipt) {
+      labelIntentRequiresManualReview(intent, 'non-reversible');
+      return;
+    }
+
+    const success = await this.provider.cancelEvent({
+      providerId: receipt.providerId,
+      eventId: receipt.eventId
+    });
+    if (!success) {
+      labelIntentRequiresManualReview(intent, 'rollback_failed');
+    }
+  }
+}
+
+export class MockCalendarProvider implements CalendarProvider {
+  private counter = 0;
+  private readonly events = new Map<string, CalendarProviderCreateRequest & { providerId: string }>();
+  constructor(private readonly options: { allowCancel?: boolean } = {}) {}
+
+  async createEvent(request: CalendarProviderCreateRequest): Promise<CalendarProviderCreateResult> {
+    this.counter += 1;
+    const eventId = `event-${this.counter}`;
+    const providerId = 'mock-calendar';
+    this.events.set(eventId, { ...request, providerId });
+    return { providerId, eventId } satisfies CalendarProviderCreateResult;
+  }
+
+  async cancelEvent(request: CalendarProviderCancelRequest): Promise<boolean> {
+    if (this.options.allowCancel === false) {
+      return false;
+    }
+    if (request.providerId !== 'mock-calendar') {
+      return false;
+    }
+    return this.events.delete(request.eventId);
+  }
+
+  getEvent(eventId: string): (CalendarProviderCreateRequest & { providerId: string }) | undefined {
+    return this.events.get(eventId);
+  }
+}
+
+function buildIcsForEvent(uid: string, payload: CalendarEventPayload): string {
+  const lines: string[] = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    `PRODID:${DEFAULT_PRODID}`,
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `SUMMARY:${escapeIcsText(payload.title)}`,
+    `DTSTART:${formatIcsDate(payload.start, payload.timezone)}`,
+    `DTEND:${formatIcsDate(payload.end, payload.timezone)}`
+  ];
+
+  if (payload.description) {
+    lines.push(`DESCRIPTION:${escapeIcsText(payload.description)}`);
+  }
+
+  if (payload.location) {
+    lines.push(`LOCATION:${escapeIcsText(payload.location)}`);
+  }
+
+  payload.attendees.forEach((attendee) => {
+    lines.push(`ATTENDEE;CN=${escapeIcsText(attendee)}:mailto:${escapeIcsText(attendee)}`);
+  });
+
+  lines.push('END:VEVENT', 'END:VCALENDAR');
+
+  return lines.join('\r\n');
+}
+
+function formatIcsDate(value: string, timezone: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const iso = date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `TZID=${timezone}:${iso}`;
+}
+
+function escapeIcsText(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+}
+
+function isEmailReceipt(value: unknown): value is EmailSendReceipt {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.providerId === 'string' && typeof record.messageId === 'string';
+}
+
+function isCalendarReceipt(value: unknown): value is CalendarEventReceipt {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.providerId === 'string' && typeof record.eventId === 'string';
 }
 
 function collectHeaders(headers: Headers): Record<string, string> {
