@@ -8,6 +8,8 @@ import {
   FileWriteDriver,
   HttpPostDriver,
   LlmCallDriver,
+  EmailSendDriver,
+  CalendarEventDriver,
   createHttpRollbackRegistry,
   tryLoadHttpRollbackRegistrySync,
   type Driver,
