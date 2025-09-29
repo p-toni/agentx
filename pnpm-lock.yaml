@@ -142,6 +142,9 @@ importers:
 
   metrics:
     dependencies:
+      '@deterministic-agent-lab/journal':
+        specifier: workspace:*
+        version: link:../packages/journal
       '@deterministic-agent-lab/replay':
         specifier: workspace:*
         version: link:../packages/replay

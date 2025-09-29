@@ -360,6 +360,50 @@ a:hover {
   padding: 1rem;
 }
 
+.muted {
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.intent-previews {
+  margin-top: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.intent-preview {
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.intent-preview h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.preview-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.preview-list li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.95rem;
+}
+
+.preview-list li strong {
+  flex-shrink: 0;
+  font-weight: 600;
+  min-width: 6rem;
+}
+
 .summary-card h4 {
   margin: 0 0 0.5rem;
   font-size: 0.95rem;

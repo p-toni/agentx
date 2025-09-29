@@ -9,6 +9,18 @@ import { execa } from 'execa';
 import { performance } from 'node:perf_hooks';
 import { openBundle, type TraceBundle } from '@deterministic-agent-lab/trace';
 import { verifyBundle, type ReplayVerificationResult } from '@deterministic-agent-lab/replay';
+import {
+  Journal,
+  EmailSendDriver,
+  CalendarEventDriver,
+  MockEmailProvider,
+  MockCalendarProvider,
+  type Intent,
+  type EmailSendPayload,
+  type EmailSendReceipt,
+  type CalendarEventPayload,
+  type CalendarEventReceipt
+} from '@deterministic-agent-lab/journal';
 
 const { mkdtemp, writeFile, rm, readdir, stat } = fsPromises;
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -91,6 +103,75 @@ program
     const report = buildReport(results, iterations);
     await fs.writeFile(outputPath, report, 'utf8');
     console.log(`Replay metrics written to ${outputPath}`);
+  });
+
+program
+  .command('reversible-sample')
+  .description('Demonstrate reversible email and calendar drivers using mock providers')
+  .action(async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'metrics-reversible-'));
+    const journalPath = path.join(workspace, 'journal.jsonl');
+    const journal = new Journal({ filePath: journalPath });
+    const context = { journal };
+
+    const emailProvider = new MockEmailProvider();
+    const emailDriver = new EmailSendDriver({ provider: emailProvider });
+    const emailIntent: Intent<EmailSendPayload, EmailSendReceipt> = {
+      type: 'email.send',
+      idempotencyKey: 'metrics-email',
+      payload: {
+        to: ['metrics@example.com'],
+        cc: [],
+        subject: 'Metrics Sample',
+        bodyText: 'This email demonstrates reversible commits.'
+      }
+    };
+
+    const emailPrepared = await emailDriver.prepare(emailIntent);
+    const emailReceipt = await emailDriver.commit(emailIntent, emailPrepared);
+    const emailExistsBeforeRollback = Boolean(emailProvider.getMessage(emailReceipt.messageId));
+    await emailDriver.rollback(emailIntent, emailReceipt, context);
+    const emailExistsAfterRollback = Boolean(emailProvider.getMessage(emailReceipt.messageId));
+
+    const calendarProvider = new MockCalendarProvider();
+    const calendarDriver = new CalendarEventDriver({ provider: calendarProvider });
+    const calendarIntent: Intent<CalendarEventPayload, CalendarEventReceipt> = {
+      type: 'calendar.event',
+      idempotencyKey: 'metrics-calendar',
+      payload: {
+        title: 'Metrics Calibration',
+        start: new Date().toISOString(),
+        end: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        timezone: 'UTC',
+        attendees: ['metrics@example.com'],
+        description: 'Calendar sample for reversible metrics'
+      }
+    };
+
+    const calendarPrepared = await calendarDriver.prepare(calendarIntent);
+    const calendarReceipt = await calendarDriver.commit(calendarIntent, calendarPrepared);
+    const eventExistsBeforeRollback = Boolean(calendarProvider.getEvent(calendarReceipt.eventId));
+    await calendarDriver.rollback(calendarIntent, calendarReceipt, context);
+    const eventExistsAfterRollback = Boolean(calendarProvider.getEvent(calendarReceipt.eventId));
+
+    const summary = {
+      email: {
+        receipt: emailReceipt,
+        existedAfterCommit: emailExistsBeforeRollback,
+        existsAfterRollback: emailExistsAfterRollback
+      },
+      calendar: {
+        receipt: calendarReceipt,
+        existedAfterCommit: eventExistsBeforeRollback,
+        existsAfterRollback: eventExistsAfterRollback
+      },
+      journalPath
+    };
+
+    console.log(JSON.stringify(summary, null, 2));
+    console.log('Reversible sample complete.');
+
+    await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
   });
 
 program.parseAsync(process.argv).catch((error) => {

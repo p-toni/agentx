@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@deterministic-agent-lab/journal": "workspace:*",
     "@deterministic-agent-lab/replay": "workspace:*",
     "@deterministic-agent-lab/runner": "workspace:*",
     "@deterministic-agent-lab/trace": "workspace:*",

@@ -9,7 +9,7 @@ import {
   fetchBundlePlan,
   revertBundle
 } from '../../../lib/api';
-import type { PlanResponse } from '../../../lib/types';
+import type { PlanResponse, PlanIntentSummary } from '../../../lib/types';
 import { useAuth } from '../../../components/auth-context';
 import { useToast } from '../../../components/toast-context';
 import { FsDiffViewer } from '../../../components/fs-diff-viewer';
@@ -200,6 +200,7 @@ export default function BundleDetailPage() {
                 <th>Timestamp</th>
                 <th>Policy</th>
                 <th>Approval</th>
+                <th>Rollback</th>
               </tr>
             </thead>
             <tbody>
@@ -242,11 +243,22 @@ export default function BundleDetailPage() {
                         '—'
                       )}
                     </td>
+                    <td>{renderRollbackCell(intent)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          <div className="intent-previews">
+            {data.intents.map((intent) => (
+              <div key={intent.id} className="intent-preview">
+                <h3>
+                  {intent.type} · {intent.id}
+                </h3>
+                {renderIntentPreview(intent)}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -272,4 +284,178 @@ export default function BundleDetailPage() {
       )}
     </div>
   );
+}
+
+function renderRollbackCell(intent: PlanIntentSummary): JSX.Element | string {
+  if (!intent.rollback) {
+    return '—';
+  }
+
+  if (!intent.rollback.available) {
+    return 'not available';
+  }
+
+  const ruleSummary = intent.rollback.rule ? `rule: ${intent.rollback.rule}` : 'registry match';
+  const idInfo = intent.rollback.requiresId ? 'requires id' : 'no id required';
+  return (
+    <div className="muted">
+      <strong>available</strong>
+      <div>{ruleSummary}</div>
+      <div>{idInfo}</div>
+    </div>
+  );
+}
+
+function renderIntentPreview(intent: PlanIntentSummary): JSX.Element {
+  switch (intent.type) {
+    case 'email.send':
+      return renderEmailPreview(intent);
+    case 'calendar.event':
+      return renderCalendarPreview(intent);
+    default:
+      return renderGenericPreview(intent);
+  }
+}
+
+function renderEmailPreview(intent: PlanIntentSummary): JSX.Element {
+  const payload = (intent.payload ?? {}) as Record<string, unknown>;
+  const to = formatRecipientList(payload.to);
+  const cc = formatRecipientList(payload.cc);
+  const bcc = formatRecipientList(payload.bcc);
+  const subject = typeof payload.subject === 'string' ? payload.subject : '(no subject)';
+  const text = typeof payload.bodyText === 'string' ? payload.bodyText : undefined;
+  const html = typeof payload.bodyHtml === 'string' ? payload.bodyHtml : undefined;
+  const body = text ?? (html ? stripHtml(html) : '(no body)');
+
+  const rows: PreviewRow[] = [
+    { label: 'Subject', value: subject },
+    { label: 'To', value: to }
+  ];
+
+  if (cc) {
+    rows.push({ label: 'CC', value: cc });
+  }
+  if (bcc) {
+    rows.push({ label: 'BCC', value: bcc });
+  }
+
+  rows.push({ label: 'Body', value: body, muted: true });
+
+  addLabelRows(rows, intent);
+  addRollbackRows(rows, intent);
+
+  return renderPreviewList(rows);
+}
+
+function renderCalendarPreview(intent: PlanIntentSummary): JSX.Element {
+  const payload = (intent.payload ?? {}) as Record<string, unknown>;
+  const title = typeof payload.title === 'string' ? payload.title : '(untitled event)';
+  const start = typeof payload.start === 'string' ? formatDateTime(payload.start, payload.timezone) : '(start unknown)';
+  const end = typeof payload.end === 'string' ? formatDateTime(payload.end, payload.timezone) : '(end unknown)';
+  const attendees = formatRecipientList(payload.attendees);
+  const location = typeof payload.location === 'string' ? payload.location : undefined;
+  const description = typeof payload.description === 'string' ? payload.description : undefined;
+
+  const rows: PreviewRow[] = [
+    { label: 'Title', value: title },
+    { label: 'Starts', value: start },
+    { label: 'Ends', value: end },
+    { label: 'Attendees', value: attendees }
+  ];
+
+  if (location) {
+    rows.push({ label: 'Location', value: location });
+  }
+  if (description) {
+    rows.push({ label: 'Description', value: description, muted: true });
+  }
+
+  addLabelRows(rows, intent);
+  addRollbackRows(rows, intent);
+
+  return renderPreviewList(rows);
+}
+
+function renderGenericPreview(intent: PlanIntentSummary): JSX.Element {
+  const rows: PreviewRow[] = [];
+  addLabelRows(rows, intent);
+  addRollbackRows(rows, intent);
+  return (
+    <div>
+      {rows.length > 0 && renderPreviewList(rows)}
+      <pre>{JSON.stringify(intent.payload ?? {}, null, 2)}</pre>
+    </div>
+  );
+}
+
+function formatRecipientList(value: unknown): string {
+  const list = toStringArray(value);
+  if (list.length === 0) {
+    return '—';
+  }
+  return list.join(', ');
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]+>/g, '').trim();
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function formatDateTime(value: string, timezone: unknown): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const tz = typeof timezone === 'string' ? timezone : 'UTC';
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: tz
+    }).format(date);
+  } catch {
+    return date.toISOString();
+  }
+}
+
+interface PreviewRow {
+  label: string;
+  value: string;
+  muted?: boolean;
+}
+
+function renderPreviewList(rows: PreviewRow[]): JSX.Element {
+  return (
+    <ul className="preview-list">
+      {rows.map((row, index) => (
+        <li key={`${row.label}-${index}`} className={row.muted ? 'muted' : undefined}>
+          <strong>{row.label}:</strong> <span>{row.value}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function addLabelRows(rows: PreviewRow[], intent: PlanIntentSummary): void {
+  const metadata = (intent.metadata ?? {}) as Record<string, unknown>;
+  const labels = toStringArray(metadata.labels);
+  if (labels.length > 0) {
+    rows.push({ label: 'Labels', value: labels.join(', ') });
+  }
+}
+
+function addRollbackRows(rows: PreviewRow[], intent: PlanIntentSummary): void {
+  const rollback = intent.rollback;
+  if (!rollback || !rollback.available) {
+    return;
+  }
+  const rule = rollback.rule ? `Rule: ${rollback.rule}` : 'Registry rule matched';
+  const idInfo = rollback.requiresId ? 'Requires resource identifier' : 'No identifier required';
+  rows.push({ label: 'Rollback', value: `${rule} · ${idInfo}`, muted: true });
 }

@@ -43,6 +43,32 @@ re-running the echo agent under random seeds.  For each execution we:
 A Markdown report summarises aggregate statistics and per-run outcomes.  This report is
 archived on every CI run so regressions become visible immediately.
 
+In addition, the metrics CLI ships a `reversible-sample` command that exercises the
+reversible email and calendar drivers in isolation:
+
+```
+pnpm --filter @deterministic-agent-lab/metrics reversible-sample
+```
+
+The command uses the in-repo mock providers to commit and roll back an `email.send` and
+`calendar.event` intent, emitting a JSON summary that shows the receipts, the initial
+side effects, and the fact that both artifacts disappear after rollback.
+
+## Reversible Drivers
+
+Two reversible drivers ship with deterministic-agent-lab:
+
+- `email.send` renders an email preview, sends via a provider adapter, and rolls back by
+  recalling the message (the mock provider stores messages in-memory).
+- `calendar.event` produces an ICS preview, creates the event through a provider adapter,
+  and rollbacks by cancelling the event. The mock provider keeps events in-memory and
+  verifies cancellation.
+
+Both drivers expose adapter interfaces so production environments can plug in actual
+mail/calendar backends (for example SMTP, Microsoft 365, or Google Workspace). Gate API
+registers the drivers by default and automatically labels matching intents with
+`external_email` or `calendar` so policy can require human approval.
+
 ## Concurrency
 
 By default the runner enables deterministic scheduling (`--deterministic`). Each
