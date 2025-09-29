@@ -119,9 +119,10 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     }
 
     const plan = await loadPlanSummary(bundle.path);
-    const intents = attachIntentIds(bundleId, plan.intents);
+    const baseIntents = applyDefaultIntentMetadata(plan.intents);
+    const intents = attachIntentIds(bundleId, baseIntents);
     const policy = await loadPolicy(policyPath);
-    const evaluation = policy.evaluate({ stage: 'plan', now: clock() }, plan.intents, plan.network);
+    const evaluation = policy.evaluate({ stage: 'plan', now: clock() }, baseIntents, plan.network);
     const approval = store.getApproval(bundleId) ?? null;
     const status = determineStatus(store, bundleId, approval);
 
@@ -185,9 +186,10 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     }
 
     const plan = await loadPlanSummary(bundle.path);
-    const intents = attachIntentIds(bundleId, plan.intents);
+    const baseIntents = applyDefaultIntentMetadata(plan.intents);
+    const intents = attachIntentIds(bundleId, baseIntents);
     const policy = await loadPolicy(policyPath);
-    const evaluation = policy.evaluate({ stage: 'commit', now: clock() }, plan.intents, plan.network);
+    const evaluation = policy.evaluate({ stage: 'commit', now: clock() }, baseIntents, plan.network);
 
     if (!evaluation.allowed) {
       reply.code(403);
@@ -244,7 +246,8 @@ export function buildServer(options: GateApiOptions): FastifyInstance {
     }
 
     const plan = await loadPlanSummary(bundle.path);
-    const intents = attachIntentIds(bundleId, plan.intents);
+    const baseIntents = applyDefaultIntentMetadata(plan.intents);
+    const intents = attachIntentIds(bundleId, baseIntents);
     const intentsById = new Map(intents.map((intent) => [intent.id, intent]));
 
     for (const record of receipts) {
@@ -346,7 +349,9 @@ function createDefaultDriverRegistry(rollbackRegistry: HttpRollbackRegistry | nu
   return {
     'files.write': () => new FileWriteDriver(),
     'http.post': () => new HttpPostDriver({ rollbackRegistry }),
-    'llm.call': () => new LlmCallDriver()
+    'llm.call': () => new LlmCallDriver(),
+    'email.send': () => new EmailSendDriver(),
+    'calendar.event': () => new CalendarEventDriver()
   };
 }
 
@@ -361,6 +366,10 @@ function createDefaultDriver(
       return new HttpPostDriver({ rollbackRegistry });
     case 'llm.call':
       return new LlmCallDriver();
+    case 'email.send':
+      return new EmailSendDriver();
+    case 'calendar.event':
+      return new CalendarEventDriver();
     default:
       return undefined;
   }
@@ -418,6 +427,58 @@ function describeRollbackIntent(
     requiresId: match.requiresId,
     idSources: match.idSources.length > 0 ? match.idSources : undefined
   } satisfies PlanRollbackSummary;
+}
+
+function applyDefaultIntentMetadata(intents: LoadedIntent[]): LoadedIntent[] {
+  return intents.map((intent) => {
+    const label = defaultLabelForIntent(intent.type);
+    if (!label) {
+      return intent;
+    }
+
+    const metadata = { ...(intent.metadata ?? {}) } as Record<string, unknown>;
+    const labels = ensureLabels(metadata.labels, label);
+
+    return {
+      ...intent,
+      metadata: {
+        ...metadata,
+        labels
+      },
+      raw: {
+        ...intent.raw,
+        metadata: {
+          ...(intent.raw.metadata as Record<string, unknown> | undefined ?? {}),
+          labels
+        }
+      }
+    } satisfies LoadedIntent;
+  });
+}
+
+function ensureLabels(existing: unknown, required: string): string[] {
+  const set = new Set<string>();
+  toStringArray(existing).forEach((value) => set.add(value));
+  set.add(required);
+  return Array.from(set.values()).sort();
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function defaultLabelForIntent(type: string): string | null {
+  switch (type) {
+    case 'email.send':
+      return 'external_email';
+    case 'calendar.event':
+      return 'calendar';
+    default:
+      return null;
+  }
 }
 
 function loadHttpRollbackRegistry(policyPath: string): HttpRollbackRegistry {

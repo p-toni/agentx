@@ -7,7 +7,17 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createBundle } from '@deterministic-agent-lab/trace';
 import { buildServer, type DriverFactory, type PlanResponse } from '../src/server';
-import type { Driver, Intent, HttpPostReceipt } from '@deterministic-agent-lab/journal';
+import {
+  EmailSendDriver,
+  CalendarEventDriver,
+  MockEmailProvider,
+  MockCalendarProvider,
+  type Driver,
+  type Intent,
+  type HttpPostReceipt,
+  type EmailSendReceipt,
+  type CalendarEventReceipt
+} from '@deterministic-agent-lab/journal';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +61,7 @@ describe('transaction gate API', () => {
             caps: {
               maxAmount: 1000
             },
-            requireApprovalLabels: ['external_email']
+            requireApprovalLabels: ['external_email', 'calendar']
           }
         },
         null,
@@ -275,6 +285,192 @@ describe('transaction gate API', () => {
 
     await server.close();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }, 30000);
+
+  it('requires approval and rolls back email.send intents via mock provider', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'gate-api-email-'));
+    cleanup.push(workspace);
+
+    const policyDir = join(workspace, 'policy');
+    await mkdir(policyDir, { recursive: true });
+    await copyFile(join(repoPolicyDir, 'policy.wasm'), join(policyDir, 'policy.wasm'));
+    await writeFile(
+      join(policyDir, 'data.json'),
+      JSON.stringify(
+        {
+          config: {
+            version: 'v1',
+            requireApprovalLabels: ['external_email', 'calendar']
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const emailProvider = new MockEmailProvider();
+    const server = buildServer({
+      policyPath: policyDir,
+      dataDir: join(workspace, '.gate'),
+      drivers: {
+        'email.send': () => new EmailSendDriver({ provider: emailProvider })
+      }
+    });
+
+    const bundleDir = join(workspace, 'bundle-email');
+    const bundlePath = join(workspace, 'bundle-email.tgz');
+    await createBundle(bundleDir, {
+      createdAt: '2024-04-01T00:00:00.000Z',
+      intents: [
+        {
+          timestamp: '2024-04-01T00:00:01.000Z',
+          intent: 'email.send',
+          payload: {
+            to: ['recipient@example.com'],
+            subject: 'Greetings',
+            bodyText: 'Hello from gate tests'
+          }
+        }
+      ],
+      network: JSON.stringify({ log: { entries: [] } })
+    });
+    await createTarball(bundleDir, bundlePath);
+
+    const upload = await server.inject({
+      method: 'POST',
+      url: '/bundles',
+      payload: { bundle: await fileToBase64(bundlePath) }
+    });
+    expect(upload.statusCode).toBe(201);
+    const bundleId = (upload.json() as { bundleId: string }).bundleId;
+
+    const plan = await server.inject({ method: 'GET', url: `/bundles/${bundleId}/plan` });
+    expect(plan.statusCode).toBe(200);
+    const planJson = plan.json() as PlanResponse;
+    expect(planJson.policy.intents[0]?.requiresApproval).toBe(true);
+    expect(planJson.policy.intents[0]?.approvalReasons).toContain(
+      'intent email.send label external_email requires approval'
+    );
+
+    const approval = await server.inject({
+      method: 'POST',
+      url: `/bundles/${bundleId}/approve`,
+      payload: { actor: 'tester' }
+    });
+    expect(approval.statusCode).toBe(200);
+
+    const commit = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/commit` });
+    expect(commit.statusCode).toBe(200);
+    const commitJson = commit.json() as {
+      receipts: Array<{ receipt: EmailSendReceipt }>;
+    };
+    const emailReceipt = commitJson.receipts[0]?.receipt;
+    expect(emailReceipt?.providerId).toBe('mock-email');
+    expect(emailReceipt?.messageId).toBeTruthy();
+    expect(emailReceipt?.messageId ? emailProvider.getMessage(emailReceipt.messageId) : undefined).toBeDefined();
+
+    const revert = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/revert` });
+    expect(revert.statusCode).toBe(200);
+    if (emailReceipt?.messageId) {
+      expect(emailProvider.getMessage(emailReceipt.messageId)).toBeUndefined();
+    }
+
+    await server.close();
+  }, 30000);
+
+  it('requires approval and rolls back calendar.event intents via mock provider', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'gate-api-calendar-'));
+    cleanup.push(workspace);
+
+    const policyDir = join(workspace, 'policy');
+    await mkdir(policyDir, { recursive: true });
+    await copyFile(join(repoPolicyDir, 'policy.wasm'), join(policyDir, 'policy.wasm'));
+    await writeFile(
+      join(policyDir, 'data.json'),
+      JSON.stringify(
+        {
+          config: {
+            version: 'v1',
+            requireApprovalLabels: ['external_email', 'calendar']
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const calendarProvider = new MockCalendarProvider();
+    const server = buildServer({
+      policyPath: policyDir,
+      dataDir: join(workspace, '.gate'),
+      drivers: {
+        'calendar.event': () => new CalendarEventDriver({ provider: calendarProvider })
+      }
+    });
+
+    const bundleDir = join(workspace, 'bundle-calendar');
+    const bundlePath = join(workspace, 'bundle-calendar.tgz');
+    await createBundle(bundleDir, {
+      createdAt: '2024-04-02T00:00:00.000Z',
+      intents: [
+        {
+          timestamp: '2024-04-02T00:05:00.000Z',
+          intent: 'calendar.event',
+          payload: {
+            title: 'Project Sync',
+            start: '2024-04-05T15:00:00.000Z',
+            end: '2024-04-05T15:30:00.000Z',
+            timezone: 'UTC',
+            attendees: ['alice@example.com']
+          }
+        }
+      ],
+      network: JSON.stringify({ log: { entries: [] } })
+    });
+    await createTarball(bundleDir, bundlePath);
+
+    const upload = await server.inject({
+      method: 'POST',
+      url: '/bundles',
+      payload: { bundle: await fileToBase64(bundlePath) }
+    });
+    expect(upload.statusCode).toBe(201);
+    const bundleId = (upload.json() as { bundleId: string }).bundleId;
+
+    const plan = await server.inject({ method: 'GET', url: `/bundles/${bundleId}/plan` });
+    expect(plan.statusCode).toBe(200);
+    const planJson = plan.json() as PlanResponse;
+    expect(planJson.policy.intents[0]?.requiresApproval).toBe(true);
+    expect(planJson.policy.intents[0]?.approvalReasons).toContain(
+      'intent calendar.event label calendar requires approval'
+    );
+
+    const approval = await server.inject({
+      method: 'POST',
+      url: `/bundles/${bundleId}/approve`,
+      payload: { actor: 'tester' }
+    });
+    expect(approval.statusCode).toBe(200);
+
+    const commit = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/commit` });
+    expect(commit.statusCode).toBe(200);
+    const commitJson = commit.json() as {
+      receipts: Array<{ receipt: CalendarEventReceipt }>;
+    };
+    const calendarReceipt = commitJson.receipts[0]?.receipt;
+    expect(calendarReceipt?.providerId).toBe('mock-calendar');
+    expect(calendarReceipt?.eventId).toMatch(/event-/);
+    expect(calendarReceipt?.eventId ? calendarProvider.getEvent(calendarReceipt.eventId) : undefined).toBeDefined();
+
+    const revert = await server.inject({ method: 'POST', url: `/bundles/${bundleId}/revert` });
+    expect(revert.statusCode).toBe(200);
+    if (calendarReceipt?.eventId) {
+      expect(calendarProvider.getEvent(calendarReceipt.eventId)).toBeUndefined();
+    }
+
+    await server.close();
   }, 30000);
 });
 

@@ -58,7 +58,7 @@ test.describe('bundle approval flow', () => {
             caps: {
               maxAmount: 1000
             },
-            requireApprovalLabels: ['external_email'],
+            requireApprovalLabels: ['external_email', 'calendar'],
             timeWindow: {
               start: '00:00',
               end: '23:59',

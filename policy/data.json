@@ -20,6 +20,7 @@
     },
     "requireApprovalLabels": [
       "external_email",
+      "calendar",
       "payments"
     ],
     "timeWindow": {
